@@ -1,0 +1,33 @@
+%% シーケンス図 UC-07 AI 設定を CRUD する（CRUD 代表）— task_ambi_v4 第2フェーズ
+%% 出典: 04_usecase_desc.csv UC-07／3-3 casbin（policy.csv・validate）／D06-d,g／D07-e,f／D15-j・D16（agents.yaml／tasks.yaml 化）
+%% 関連 DM: DM-03 メンバ（手動作成）／DM-04 権限ポリシー／DM-05 ルール／DM-06 hooks／DM-09 ペルソナ本文／DM-11 LLM プロファイル／DM-12 上限ポリシー／DM-26 コマンド定義／DM-27 段テンプレート／DM-07 台帳
+sequenceDiagram
+  autonumber
+  actor Me as 自分
+  participant UI as 設定 UI（Streamlit）
+  participant Cfg as AI 設定<br/>（DM-03〜06, 11, 12, 26）
+  participant Val as validate<br/>（順方向・逆方向）
+  participant Reg as メンバ台帳（DM-07）
+  participant OL as 外側ループ（次回 kickoff）
+  participant Crew as 実行器 CrewAI
+
+  Me->>UI: 一覧を見る（領域 A のファイル群: agents.yaml＝メンバ・ペルソナ既定／tasks.yaml＝段テンプレート／権限／ルール／hooks／AI モデル／上限ポリシー／コマンド定義 D16）
+  UI->>Cfg: read
+  Cfg-->>UI: 一覧（レベル: PJ／メンバ／グローバル を明示）
+  Me->>UI: 追加・編集・削除（例: projects/<key>/agents.yaml に PersonaKey のエントリを追加＝メンバ作成 D07-f・D16／tasks.yaml の段テンプレートを編集／LLM プロファイルを local に切替／コマンド定義に名前→argv を追加 D07-e）
+  UI->>Cfg: 変更案
+  Cfg->>Val: 検証
+  Val->>Val: 順方向: メンバ⊆policy 主体／agents.yaml・tasks.yaml の許可フィールド・禁止キー・参照（PersonaKey・llm・tools）・｛変数｝検査（D16-b/c/d）／委譲相手実在／ストレージ権限 6 本
+  Val->>Val: 逆方向: policy の member: 主体⊆メンバ台帳（孤児ポリシー検出）
+  Val->>Val: コマンド: policy の cmd: オブジェクト⊆コマンド定義の名前、定義の名前は 1 行以上から参照（D07-e）
+  Val->>Val: スキル・MCP・hooks の解決可能性（接続はしない）
+  alt 違反
+    Val-->>UI: 拒否＋理由（P1 ゲート）
+  else 通過
+    Cfg->>Cfg: 保存（設定ファイル）
+    Cfg->>Reg: 台帳を再導出（bd actor／casbin subject／表示名）
+    Cfg-->>UI: 保存完了。「次回 kickoff から効く」と表示
+  end
+  Note over OL,Crew: 実行中の kickoff には反映しない（反映は次回 kickoff から）
+  OL->>Cfg: kickoff 時に設定を読む
+  OL->>Crew: Agent 構築（role/goal/backstory=agents.yaml（rules.md 合成）, llm=プロファイル, tools=装備（agents/tasks.yaml D16-a）, skills, mcps, hooks 登録）

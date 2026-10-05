@@ -1,0 +1,35 @@
+[project]
+name = "trigger"
+version = "0.1.0"
+description = "trigger — 常駐（スケジューラ・ファイル監視）と発火の 1 経路・実行履歴・トリガー UI"
+requires-python = ">=3.13"
+dependencies = [
+    "common",
+    # 時刻発火。3.11.3・MIT・**py.typed なし**（011 R-09）。型スタブが無いので
+    # `# pyright: ignore[reportMissingTypeStubs]` を `service/jobs.py` の import 1 箇所に閉じる
+    # （005 SD-36 と同型）。**唯一の apscheduler import 点はそのファイルだけ**（.importlinter の
+    # scheduler-scope が機械検査する）。
+    "apscheduler>=3.11,<4",
+    # ファイル監視（PollingObserver）。6.0.0・Apache-2.0・py.typed あり（011 R-09）。
+    # **明示宣言する** —— かつては streamlit の推移依存としても `uv.lock` に在ったが、
+    # 016 で streamlit を外したのでその在庫は消えた（R-09 の判断が結果的に効いた）。
+    "watchdog>=6.0,<7",
+    # 宣言的設定ファイル（triggers.yaml）の読み書き。6.0.3・MIT・py.typed なし。
+    "pyyaml>=6.0.3,<7",
+    # HTTP の口（APIRouter）。**httpx は実行時依存に入れない**（境界契約 httpx-scope の対象側。
+    # テストの TestClient はルートの dev 依存に載り、src レイアウトのため grimp のグラフに
+    # 載らない＝ A-07）。0.141.1・MIT・py.typed あり。
+    "fastapi>=0.141,<1",
+    # トリガー画面（`ui.py` だけが import する）。3.17.1・MIT・py.typed あり（016 research R-16）。
+    # **requests も httpx も足さない** —— HTTP クライアントは標準ライブラリ `urllib.request`
+    # の `call_api` 1 関数に閉じる（010 SD-06・FR-067）。
+    # 016 で Streamlit（1.62.0）から置き換えた（D23）。
+    "nicegui>=3.17.1,<4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trigger"]

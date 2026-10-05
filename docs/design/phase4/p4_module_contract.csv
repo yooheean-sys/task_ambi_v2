@@ -1,0 +1,57 @@
+if_id,提供モジュール,利用モジュール,Protocol名,メソッド名,入力,出力,例外,同期/非同期,source_id(rel_id)
+IF-01,board,orchestrator,BoardReader,show,issue_id,Issue（DM-13: labels・parent・acceptance・status・claim 状態）,IssueNotFound／BoardUnavailable,同期,REL-03-02;UC-I1;D04-b
+IF-02,board,executor,BoardReader,show,issue_id,Issue（read_issue Tool 用の読取）,IssueNotFound／BoardUnavailable,同期,REL-03-02;tools.py read_issue
+IF-03,board,monitor,BoardReader,show,issue_id,Issue（写像後の確認読取）,IssueNotFound／BoardUnavailable,同期,REL-05-02;UC-13;D04-b
+IF-04,board,orchestrator,BoardReader,children_of,parent_id,list[Issue]（盤面から導出。D01 二重ガード・確認読取の唯一の出所）,BoardUnavailable,同期,REL-03-02;D01-c;D08-e;FN-38
+IF-05,board,orchestrator,BoardReader,open_question_of,issue_id,Issue | None（未回答の kind=question 子）,BoardUnavailable,同期,REL-03-02;D08-e;UC-04
+IF-06,board,orchestrator,BoardReader,list_working,起動条件のラベルフィルタ（ClaimFilter）,list[Issue]（state=working の残骸）,BoardUnavailable,同期,REL-03-02;FN-38;UC-11
+IF-07,board,orchestrator,BoardReader,comments,issue_id,list[Comment]（DM-16: actor・種別 人間指示／回答／封筒）,BoardUnavailable,同期,REL-03-02;FN-07;UC-04
+IF-08,board,monitor,BoardReader,comments,issue_id,list[Comment]（封筒の反映確認）,BoardUnavailable,同期,REL-05-02;UC-13
+IF-09,board,settings,BoardReader,has_open_issues,project_key,bool（`project:<key>` の open issue の有無。削除ガード）,BoardUnavailable,同期,REL-01-02;FN-27;UC-08
+IF-10,board,orchestrator,BoardWriter,claim_next,ClaimFilter（ラベル集合＋任意 project_key）・actor,Issue | None（bd ready --claim 相当。state=working を付与）,BoardUnavailable,同期,REL-03-02;FN-31;UC-11
+IF-11,board,orchestrator,BoardWriter,create,IssueSpec（title・summary・labels・parent・acceptance）・actor,issue_id（起票は orchestrator の 1 箇所のみ）,BoardUnavailable／BoardWriteUnverified,同期,REL-03-02;D01-a;UC-I1;FN-08
+IF-12,board,orchestrator,BoardWriter,add_dependency,from_id・to_id・actor,None（兄弟依存 B1・blocks）,BoardUnavailable,同期,REL-03-02;UC-I1;UC-04
+IF-13,board,orchestrator,BoardWriter,move_dependents,old_id・new_id・actor,None（dependents 付け替え）,BoardUnavailable,同期,REL-03-02;UC-I1
+IF-14,board,orchestrator,BoardWriter,release,issue_id・actor,None（claim 解放。state=working を外す）,BoardUnavailable,同期,REL-03-02;UC-I1;UC-04;FN-38
+IF-15,board,monitor,BoardWriter,release,issue_id・actor,None（F 級写像の一部）,BoardUnavailable,同期,REL-05-02;UC-13;FN-44
+IF-16,board,orchestrator,BoardWriter,comment,issue_id・body・actor,None（停止理由・UNSAFE 記録）,BoardUnavailable,同期,REL-03-02;UC-I1;P3
+IF-17,board,executor,BoardWriter,comment,issue_id・body・actor,None（record_progress Tool）,BoardUnavailable,同期,REL-03-02;tools.py record_progress
+IF-18,board,monitor,BoardWriter,comment,issue_id・body（封筒: 等級・種類・実測値）・actor,None,BoardUnavailable,同期,REL-05-02;D06-i;FN-43
+IF-19,board,orchestrator,BoardWriter,close,issue_id・reason・actor,None（親 close／リーフ承認 close）,BoardUnavailable,同期,REL-03-02;UC-I1
+IF-20,board,monitor,BoardWriter,close,issue_id・reason・actor,None（W 級写像: close＋封筒）,BoardUnavailable,同期,REL-05-02;UC-13;FN-44
+IF-21,board,orchestrator,BoardWriter,set_labels,issue_id・add・remove・actor,None（note=single-child 観測印・state 更新）,BoardUnavailable,同期,REL-03-02;D06-f
+IF-22,board,monitor,BoardWriter,set_labels,issue_id・add（state=failing）・remove・actor,None（F 級写像）,BoardUnavailable,同期,REL-05-02;UC-13;FN-44
+IF-23,settings,orchestrator,SettingsReader,get_project,project_key,Project（DM-01/02: フォルダ対応付け・outcome 出力先）,ProjectNotFound,同期,REL-03-01;D04-d;FN-26
+IF-24,settings,orchestrator,SettingsReader,get_limits,project_key,LimitPolicy（DM-12: max_requests・max_cost。global＋PJ 上書き解決済み）,—,同期,REL-03-01;D06-g;FN-21
+IF-25,settings,orchestrator,SettingsReader,get_rules,project_key,Rules（DM-05: PJ 共通ルールのみ。役割ルールは agents.yaml の backstory に吸収 D16-h）,ProjectNotFound,同期,REL-03-01;D06-e;D16-h
+IF-26,settings,orchestrator,SettingsReader,get_hooks,project_key,HooksConfig（DM-06）,ProjectNotFound,同期,REL-03-01;D06-e
+IF-27,settings,orchestrator,MemberResolver,resolve,project_key・persona_key,Member（DM-03/07: member_id・bd_actor・casbin_subject・CrewAI フィールド（role・goal・backstory・llm_profile 解決済み・tools・skills・mcps・max_iter・max_rpm・max_execution_time）。agents.yaml ④→⑤ merge 済み D16-d/h）,MemberNotFound,同期,REL-03-01;D06-b;FN-19;FN-20;D16-h
+IF-28,settings,orchestrator,MemberResolver,is_human,actor,bool（台帳照合。台帳内＝AI）,—,同期,REL-03-01;FN-10;D08-c
+IF-29,settings,executor,Authorizer,enforce,subject・obj・act,bool（casbin enforce。Tool の前段判定）,—,同期,REL-03-01;D08-c;FN-18
+IF-30,settings,executor,CommandRegistry,resolve_command,name,argv: list[str]（DM-26。shell=False・引数は AI に渡させない）,UnknownCommand,同期,REL-03-01;D07-e;D08-c;FN-18
+IF-31,vault,orchestrator,VaultReader,check_project_folders,ProjectFolders（DM-02）,FolderCheck（不在一覧。空＝OK）,VaultPathViolation（宣言が vault ルートの外。不在は例外にせず missing に載せる）,同期,REL-03-04;D04-d;FN-26
+IF-32,vault,settings,VaultReader,check_project_folders,ProjectFolders（DM-02）,FolderCheck（登録・編集時の存在確認）,VaultPathViolation（宣言が vault ルートの外。不在は例外にせず missing に載せる）,同期,REL-01-04;FN-24
+IF-33,vault,executor,VaultReader,list_inputs,ProjectFolders・role,list[FileRef]（PJ 入力・役割フォルダ・兄弟成果物 B2）,VaultNotFound（役割が宣言に無い／領域フォルダが実在しない。空の一覧に倒さない）／VaultPathViolation,同期,REL-03-04;tools.py list_input_files
+IF-34,vault,executor,VaultReader,read_input,ProjectFolders・FileRef,str,VaultNotFound／VaultPathViolation,同期,REL-03-04;tools.py read_input_file
+IF-35,vault,executor,VaultReader,read_outcome_file,ProjectFolders・filename,str（不在は例外で明示。黙って空を返さない）,VaultNotFound／VaultPathViolation,同期,REL-03-04;FN-13;tools.py read_outcome_file
+IF-36,vault,orchestrator,VaultReader,outcome_exists,ProjectFolders・filename,bool（完了ゲート: outcome トークン→実ファイル）,VaultPathViolation,同期,REL-03-04;UC-I1;FN-51
+IF-37,vault,executor,OutcomeWriter,write_outcome,ProjectFolders・filename・content,WrittenPath（外縁ゲート・Windows 禁止文字ゲートを通過した実パス。返すのは vault ルート相対＝OB-6・FR-025）,VaultPathViolation／VaultNotFound（outcome_dir が実在しない。フォルダを作らない＝VD-19）,同期,REL-03-04;FN-11;FN-12;tools.py write_outcome
+IF-38,monitor,orchestrator,RunMonitor,begin,kickoff_id・LimitPolicy（DM-12）・threshold_T（DM-11 context_window から導出）,None（計測 DM-20 の開始。以後の Hook 呼び出しをこの kickoff に帰属）,—,同期,REL-03-05;D06-g;FN-40;FN-41
+IF-39,monitor,orchestrator,RunMonitor,finish,kickoff_id・issue_id・actor・CrewOutcome（events・halted・task_output）,RunVerdict（grade F/W/I・closed・halted・envelope・Measurement DM-20）。F/W は本メソッド内で board へ写像し確認読取まで行う,MappingUnverified（写像が読めない／bd 不達→停止痕跡を残して停止 P3）,同期,REL-03-05;REL-05-02;UC-12;UC-13;FN-42;FN-43;FN-44;FN-45
+IF-40,monitor,executor,LLMHttpHook,on_outbound,httpx.Request,httpx.Request（送信前トークン・回数・コストの判定。超過は RunHalted を送出）,RunHalted（BaseException 直系。Z-6）,同期,D08 §6-2;FN-40;interceptor.py Z-1
+IF-41,monitor,executor,LLMHttpHook,on_inbound,httpx.Response,httpx.Response（usage・finish_reason の観測）,—,同期,FN-40;FN-42
+IF-42,monitor,executor,LLMHttpHook,aon_outbound,httpx.Request,httpx.Request,RunHalted,非同期,FN-40;interceptor.py Z-4
+IF-43,monitor,executor,LLMHttpHook,aon_inbound,httpx.Response,httpx.Response,—,非同期,FN-40;interceptor.py Z-4
+IF-44,stages,orchestrator,StageCatalog,resolve_stage,kind ラベル集合・has_parent,StageSpec（段名・mode propose/execute・allowed_personas・min_items）,UnknownStage,同期,REL-03-03a;FN-04;D06-f;D08-b
+IF-45,stages,orchestrator,StageCatalog,build_prompt,StageSpec・Member（role/goal/backstory 等）・Rules（DM-05）・TaskTemplates（DM-27）・ContextRefs・feedback（差し戻し時）,PromptBundle（tasks.yaml テンプレート＋Member の role/goal/backstory 合成・task_tools。DM-08/27）,UnknownPersona,同期,REL-03-03a;FN-46;D06-e;D16-h
+IF-46,stages,orchestrator,ProposalGate,validate_proposal,Proposal・StageSpec・existing_children（title 一覧）,GateResult（合格／指摘一覧／single-child 観測印）,—,同期,REL-03-03a;FN-47;FN-48;FN-49;D06-f
+IF-47,stages,orchestrator,ProposalGate,extract_outcome_tokens,acceptance（DM-14）,list[str]（完了ゲート鎖の入力）,—,同期,REL-03-03a;FN-51;UC-I1
+IF-48,executor,orchestrator,CrewExecutor,run,CrewSpec（PromptBundle（task_tools 含む）・Member（CrewAI フィールド）・HooksConfig・mode・issue_id・ProjectFolders）,CrewOutcome（proposals｜task_output｜review verdict／escalate 要求・written outcomes・events（中立型）・halted）,ExecutorFailure（CrewAI 例外の翻訳）,同期,REL-03-03b;UC-I1;FN-50;D08 §6-2
+IF-49,orchestrator,trigger,KickoffRunner,run,ExecutionContext（DM-19: 起動種別・trigger_snapshot・dropped_path・ClaimFilter）,KickoffResult（DM-18: status・result・kickoff_id・issue_id・I 級付記）,KickoffBusy（single-flight 中）,同期（ブロッキング。スレッド化は呼び側）,REL-06-03;D08-d;UC-11;FN-37
+IF-50,settings,orchestrator,SettingsReader,get_tasks,project_key,TaskTemplates（DM-27: 7 キーの段テンプレート。global→PJ 上書き適用済み・generation 付き）,ProjectNotFound,同期,REL-03-01;D15-j;D16-h
+IF-51,repo,executor,RepoReader,list_files,ProjectRepos・subdir,list[str]（リポジトリ相対の POSIX パス。除外ディレクトリ・拒否パターンは載せない）,RepoNotFound（未登録・未 clone・subdir 不在）／RepoPathViolation,同期,D25-a;tools list_repo_files
+IF-52,repo,executor,RepoReader,read_file,ProjectRepos・path,str（不在は例外で明示。黙って空を返さない）,RepoNotFound／RepoPathViolation,同期,D25-a;tools read_repo_file
+IF-53,repo,orchestrator,RepoReader,exists,ProjectRepos・path,bool（完了ゲート: repo トークン→実ファイル）,RepoNotFound（未登録・未 clone。ファイルの不在は偽）／RepoPathViolation,同期,D25-b;FN-51
+IF-54,repo,executor,RepoWriter,write_file,ProjectRepos・path・content,bool（既存を上書きしたら真。原子的置換）,RepoNotFound（未登録・未 clone）／RepoPathViolation,同期,D25-a;tools write_repo_file
+IF-55,repo,executor,RepoWriter,delete_file,ProjectRepos・path,None（ファイル 1 つ。ディレクトリは消さない）,RepoNotFound／RepoPathViolation,同期,D25-a;tools delete_repo_file
+IF-56,stages,orchestrator,ProposalGate,extract_repo_tokens,acceptance（DM-14）,list[str]（完了ゲート・被覆検査の入力。repo/<パス>）,—,同期,D25-b;FN-51

@@ -1,0 +1,60 @@
+%% trigger（BC-06 トリガー）内部シーケンス 主図 — lifespan 起動（領域 B → 再登録・watcher 開始）→ 発火（timer／file／manual／hooks）→ 共通経路 fire（ctx → KickoffRunner.run → 履歴 csv）→ 停止 — task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-49（利用）／p2_sequence_UC-11.mmd／付録：トリガー実行機能の設計 §1〜§6（DEC-012: app プロセス内の MOD として読み替え）／D04-c・D06-h,j・D07-a,b・D09-e／FN-29〜FN-37／P5D-039〜042
+%% レーン規約（D11-c／P5D-003／P5D-029）: 自 MOD 内部＝ファイル単位＋ライブラリ（lib:apscheduler・lib:watchdog）／利用先＝Protocol 名／外部＝設定ファイル領域 B・実行履歴 csv・DL フォルダ・タイマ・ファイル投下・apps/api（lifespan の呼び手）。kernel（CorrelationContext）は Note のみ
+sequenceDiagram
+  autonumber
+  participant API as apps/api
+  participant Svc as trigger/service.py<br/>（TriggerService: 定義・登録・発火・履歴）
+  participant Sch as trigger/lib:apscheduler<br/>（BackgroundScheduler＋MemoryJobStore）
+  participant W as trigger/repository.py<br/>（領域 B・履歴 csv・watcher＋完了検知）
+  participant WD as trigger/lib:watchdog<br/>（PollingObserver）
+  participant B as 設定ファイル領域 B
+  participant H as 実行履歴 csv
+  participant DL as DL フォルダ
+  participant T as タイマ
+  participant KR as KickoffRunner
+
+  API->>Svc: lifespan 開始（TriggerHandle.lifespan。憲章 §4: 常駐機能は app プロセス内）
+  Svc->>Svc: 常駐部品を作る（BackgroundScheduler・専用ワーカー・完了検知・PollingObserver）。**start のたびに作り直す**（Thread は再 start できず ThreadPoolExecutor は shutdown 後に submit できない。build ではスレッドを 1 本も起こさない）
+  Svc->>W: load_definitions()
+  W->>B: triggers.yaml を読む（無ければ既定トリガーだけの雛形を生成）
+  Svc->>Svc: 既定トリガー「ready 巡回」を保証（is_default・interval・削除不可。間隔の初期値は config.json D06-j(1)）
+  loop 有効なトリガーごと
+    Svc->>Sch: add_job(fire, trigger=Cron|Interval, id=trigger_id, max_instances=1, coalesce=True, misfire_grace_time=config)（インメモリ jobstore。起動時再登録 D07-a。追い発火なし）
+  end
+  Svc->>W: 完了検知を起こす（settle の専用スレッド 1 本。watcher_enabled と独立に動く）
+  Svc->>W: 監視を起こす（watcher_enabled=true のときだけ）
+  W->>WD: PollingObserver.schedule(handler, watch_dir, recursive=False) → start（/mnt/c。R12-P4 は合格・poll_interval_sec=5.0）
+  Svc->>Sch: start()
+
+  rect rgb(245,245,255)
+    Note over Sch,KR: 発火の 3 入口は全て Svc.fire(trigger_snapshot, kind, dropped_path) に合流（P5D-041）
+    T->>Sch: 時刻到来
+    Sch->>Svc: fire(snapshot, kind=timer)（APScheduler executor スレッド上）
+    DL->>WD: ファイルが置かれる
+    WD->>W: on_created/on_modified
+    W->>W: 完了検知: サイズ・mtime が stable_seconds（2 秒）安定するまで待つ（X7。**新規実装**。正は 011 の実測 (b) で、P5D-042 の移植元は存在しない）。**stat は poll_interval とは別に約 1 秒間隔**で回す。**完了したら保留から落とす**（落とさないと TTL 切れで再発火する）。**重複抑止の 4 つ組**（trigger_id・実パス・サイズ・mtime）を stable_seconds×10 だけ覚える。投下ファイルは消費しない（D06-h）
+    W->>Svc: fire(snapshot, kind=file, dropped_path)
+    Note over Svc: manual（POST /triggers/{id}/run）と退避経路（POST /hooks/file）は router から同じ fire へ（副図 p5_trigger_sequence_ui.mmd）。この 2 入口は **max_workers=1 の専用ワーカー**（thread_name_prefix=trigger-fire）で走る（並列度を上げない＝ orchestrator が single-flight）
+  end
+
+  Svc->>Svc: fire: correlation_id を発番して CorrelationContext に bind（HTTP を通らない入口。憲章 §6 改訂）<br/>→ ExecutionContext(kind, trigger_snapshot=TriggerSnapshot(id・name・type), dropped_path, claim_filter=定義の起動条件)
+  Svc->>W: write_history_start(run_id, trigger_id/name/type・kind・started_at・dropped_path・correlation_id, status=started)（P5D-043）
+  W->>H: history_YYYYMM.csv に開始行を追記（未確定列は空）
+  Svc->>KR: run(ctx)（同期・ブロッキング。スレッド化は呼び側＝APScheduler executor／watcher スレッド D09-e）
+  alt KickoffBusy（single-flight 中）
+    KR-->>Svc: KickoffBusy
+    Svc->>W: finalize_history(run_id, status=busy, finished_at)
+  else
+    KR-->>Svc: KickoffResult（kickoff_id・status・issues・notes）
+    Svc->>W: finalize_history(run_id, kickoff_id・finished_at・duration・status・issues_ok/failing・notes)
+  end
+  W->>H: 同じ run_id の行を全列埋めて書き換え（ファイル全体を一時ファイルに書き os.replace。trigger 内のロックで直列化。開始行のあるファイルに書く）
+  Note over W,H: 上書き方式（P5D-043。ユーザ選択）: 憲章 §2 例外 (b) の現物が「開始時に書いた行を終了時に確定値で埋める書換え」を明示的に許すので適合する（読み戻しは表示のみ）。プロセスが kickoff 中に死ねば status=started の行が残り「終わっていない」と分かる
+  Svc->>Svc: WatcherState（次回実行時刻・running・watcher 生死）はインメモリ（DM-25）。REST 越しにのみ読める
+
+  API->>Svc: lifespan 終了
+  Svc->>Sch: shutdown(wait=True)（進行中 kickoff は完走 D06-j(2)。実測 0.951 秒はイベントループを塞ぐ）
+  Svc->>Svc: 専用ワーカーの停止（worker.shutdown(wait=True)。manual／hooks の 1 本）
+  Svc->>W: 監視の停止 → 完了検知の停止（observer を止めてから settle を join）。**この 3 段の順を変えない**（逆にすると停止中に新しい発火が入る）
+  Note over Svc,KR: trigger は KickoffRunner 以外の Protocol を使わず、beads・vault・設定領域 A に触れない。flock は持たない（単一 systemd ユニット内の MOD。DEC-012・single-flight は orchestrator）

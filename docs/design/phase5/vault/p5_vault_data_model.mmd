@@ -1,0 +1,165 @@
+%% vault（BC-04 成果物）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p2_domain_model.mmd DM-17（＋DM-02 は settings 所有・vault は解決のみ）／p4_module_contract.csv IF-31〜37／OB-4〜OB-13／D06-a／D07-c／PoC safefs.py・tools.py（読取のみ）
+%% 記法: classDiagram。namespace common_interfaces_vault_py＝受け渡し型（実体は common/interfaces/vault.py。FolderCheck・FileRef・WrittenPath は本フェーズで p4 notes §2 に追記 P5D-012）／
+%%   namespace vault_internal＝MOD 内部／namespace obsidian_entities＝外部実体（vault 上のフォルダ・ファイルの構造。人間所有）
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+%% 裁定: P5D-008〜012（p5_decision_log.csv）
+classDiagram
+  direction LR
+
+  namespace common_interfaces_vault_py {
+    class VaultArea["VaultArea（領域）"] {
+      <<enumeration>>
+      pj_input
+      role
+      outcome
+    }
+    class FolderCheck["FolderCheck（存在検証の結果）"] {
+      <<受け渡し型>>
+      +missing list~str~ 不在の vault ルート相対パス
+      +ok bool 導出（missing が空）
+    }
+    class FileRef["FileRef（読める 1 ファイル）"] {
+      <<受け渡し型>>
+      +area VaultArea
+      +rel_path vault ルート相対（OB-6: このまま AI に渡す）
+      +name
+      +size_bytes
+      +mtime
+    }
+    class WrittenPath["WrittenPath（書込結果）"] {
+      <<受け渡し型>>
+      +rel_path outcome/<filename>（vault ルート相対）
+      +bytes
+      +overwritten bool
+      +archived_to str | None outcome/_archive/<filename>.<stamp>
+    }
+    class VaultNotFound["VaultNotFound"] {
+      <<exception>>
+      +NotFoundError を継承
+      +rel_path / role
+    }
+    class VaultPathViolation["VaultPathViolation"] {
+      <<exception>>
+      +ViolationError を継承
+      +kind outside_root | outside_area | forbidden_name | reserved | too_large | not_text | empty
+      +detail 違反した文字・上限など
+    }
+  }
+
+  namespace vault_internal {
+    class VaultDeps["VaultDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +（空）
+    }
+    class VaultHandle["VaultHandle（build の戻り）"] {
+      <<frozen dataclass>>
+      +vault_reader VaultReader
+      +outcome_writer OutcomeWriter
+      +router None
+      +build(deps, config VaultConfig 任意) 差し替えは config だけ
+    }
+    class VaultEnv["VaultEnv（.env）"] {
+      <<Settings>>
+      +VAULT_ROOT 絶対パス 例 /mnt/c/Users/…/vault
+    }
+    class VaultConfig["VaultConfig（vault/config.json）"] {
+      <<Settings>>
+      +forbidden_chars 既定 \ / : * ? " < > | ＋制御文字
+      +forbidden_obsidian 既定 # ^ [ ] | と %%
+      +reserved_names CON PRN AUX NUL COM1-9 LPT1-9
+      +forbid_trailing_dot_space true
+      +max_filename_bytes 既定 200
+      +max_outcome_bytes 既定 1MiB
+      +archive_dir 既定 _archive
+      +list_exclude_prefixes 既定 . のみ（退避先名は archive_dir から導出）
+      +encoding 既定 None＝ルート defaults.encoding を継承
+    }
+    class ResolvedPath["ResolvedPath（解決済み実パス）"] {
+      <<VO>>
+      +rel vault ルート相対
+      +real symlink 解決後の絶対パス
+      +area VaultArea
+      +root_ok / area_ok bool
+    }
+    class NameGateResult["NameGateResult（ファイル名ゲート）"] {
+      <<VO>>
+      +ok bool
+      +violations tuple~NameViolation~ 触れた規則すべて（早期打ち切りしない）
+    }
+    class NameViolation["NameViolation（触れた 1 規則）"] {
+      <<VO>>
+      +code 規則コード（reserved_word ほか 10 種）
+      +token 違反した文字・語・実測値
+    }
+    class FileStat["FileStat（stat の写し）"] {
+      <<VO>>
+      +size_bytes int
+      +mtime datetime UTC
+    }
+  }
+
+  namespace obsidian_entities {
+    class VaultRoot["vault ルート（VAULT_ROOT）"] {
+      <<外部実体>>
+      +人間所有の Obsidian vault
+      +Windows 側ドライブ経由。判定は実体の同一性で行う（大文字小文字に依存しない）
+    }
+    class ProjectDir["PJ フォルダ（DM-02 pj_input_dir）"] {
+      <<外部実体>>
+      +入力ファイル群（.md ほか）
+      +outcome/ を直下に持つ
+    }
+    class RoleDir["役割フォルダ（DM-02 role_dirs[persona]）"] {
+      <<外部実体>>
+      +役割ごとの入力・手順書
+    }
+    class OutcomeDir["outcome/（DM-17 の置き場）"] {
+      <<外部実体>>
+      +フラット（ファイル名＝acceptance の outcome トークン）
+      +_archive/ 退避先（システムが作る唯一のフォルダ）
+    }
+    class OutcomeFile["成果物ファイル（DM-17）"] {
+      <<外部実体>>
+      +name 禁止文字ゲート済み
+      +UTF-8 テキスト
+      +上書き時は _archive/<name>.<UTC stamp> に旧版
+    }
+  }
+
+  FileRef --> VaultArea
+  ResolvedPath --> VaultArea
+  VaultHandle ..> VaultEnv : build が読む
+  VaultHandle ..> VaultConfig : build が読む
+  ResolvedPath ..> VaultRoot : 外縁の基準
+  NameGateResult --> NameViolation
+  NameGateResult ..> VaultConfig : 禁止集合
+  NameGateResult ..> VaultPathViolation : 不合格なら
+  WrittenPath ..> OutcomeFile : 書込結果
+  FileRef ..> ProjectDir : area pj_input
+  FileRef ..> RoleDir : area role
+  FileRef ..> OutcomeFile : area outcome（B2）
+  VaultRoot "1" *-- "0..*" ProjectDir
+  VaultRoot "1" *-- "0..*" RoleDir
+  ProjectDir "1" *-- "1" OutcomeDir
+  OutcomeDir "1" *-- "0..*" OutcomeFile
+
+  note for VaultArea "永続化先: なし（コード定数）"
+  note for FolderCheck "永続化先: なし（インメモリ）"
+  note for FileRef "永続化先: なし（インメモリの写像。実体は Obsidian vault のファイル）"
+  note for WrittenPath "永続化先: なし（インメモリ。書込 1 回の結果。上書きの観測印は呼び手が beads に残す）"
+  note for VaultNotFound "永続化先: なし（インメモリ）"
+  note for VaultPathViolation "永続化先: なし（インメモリ。P1 ゲート違反全般 P5D-011）"
+  note for VaultDeps "永続化先: なし（インメモリ）"
+  note for VaultHandle "永続化先: なし（インメモリ。composition root が保持）"
+  note for VaultEnv "永続化先: ファイル（リポジトリ直下 .env。環境依存値 OB-4／憲章 §5。vault MOD だけが読む P5D-009）"
+  note for VaultConfig "永続化先: ファイル（vault/config.json。禁止文字集合の既定は D07-c。Obsidian 1.12.7 と照合済みで書き換え不要 P5D-010）"
+  note for ResolvedPath "永続化先: なし（インメモリ。毎回再解決しキャッシュしない。憲章 §2 他の書き手。包含は実体の同一性＝inode で判定し文字列比較を使わない）"
+  note for NameGateResult "永続化先: なし（インメモリ）"
+  note for NameViolation "永続化先: なし（インメモリ。code は規則の識別子、token は FR-029 が要求する該当文字）"
+  note for FileStat "永続化先: なし（インメモリ。os.stat_result を service へ漏らさないための器）"
+  note for VaultRoot "永続化先: Obsidian（人間所有。システムはフォルダを作らない OB-9）"
+  note for ProjectDir "永続化先: Obsidian（DM-02 の対応付けは settings の領域 A、実体はここ）"
+  note for RoleDir "永続化先: Obsidian（人間所有・読取のみ）"
+  note for OutcomeDir "永続化先: Obsidian（書込可の唯一の領域 OB-8。_archive/ のみシステムが mkdir）"
+  note for OutcomeFile "永続化先: Obsidian（DM-17。原子的書込＝一時ファイル＋os.replace）"

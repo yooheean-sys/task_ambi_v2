@@ -1,0 +1,18 @@
+{
+  "min_items_override": {},
+  "min_acceptance_len": 10,
+  "placeholder_patterns": [
+    "",
+    "-",
+    "n/a",
+    "na",
+    "tbd",
+    "todo",
+    "なし",
+    "特になし",
+    "未定",
+    "検討中",
+    "後で"
+  ],
+  "max_acceptance_default": null
+}

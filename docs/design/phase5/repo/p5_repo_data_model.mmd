@@ -1,0 +1,48 @@
+%% 記法: classDiagram。namespace common_interfaces_repo_py＝受け渡し型（実体は common/interfaces/repo.py）／
+%%   namespace repo_internal＝MOD 内部／namespace git_entities＝外部実体（ローカルリポジトリの作業ツリー。人間所有）
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+%% 裁定: D25（プロジェクトのリポジトリをファイル CRUD する所有モジュール repo の新設。D24-1 の部分撤回）
+classDiagram
+  direction LR
+
+  namespace common_interfaces_repo_py {
+    class RepoNotFound["RepoNotFound"] {
+      <<exception>>
+      +NotFoundError を継承
+      +rel_path リポジトリ相対（リポジトリ自体が無いときは空文字）
+    }
+    class RepoPathViolation["RepoPathViolation"] {
+      <<exception>>
+      +ViolationError を継承
+      +kind invalid | outside_repo | git_dir | denied | too_large | not_text
+      +detail 違反したパス・上限など
+    }
+  }
+
+  namespace repo_internal {
+    class RepoConfig["RepoConfig（packages/features/repo/config.json）"] {
+      +max_read_bytes int 読取の上限
+      +max_write_bytes int 書込の上限
+      +max_list_entries int 一覧の上限
+      +excluded_dirs list~str~ 一覧で刈り込むディレクトリ名
+      +deny_patterns list~str~ 読み書きを拒む名前（fnmatch。秘密を LLM に送らない）
+    }
+    class RepoFiles["RepoFiles（RepoReader・RepoWriter の実装）"] {
+      +list_files()
+      +read_file()
+      +exists()
+      +write_file()
+      +delete_file()
+    }
+  }
+
+  namespace git_entities {
+    class WorkTree["WorkTree（local_path の作業ツリー）"] {
+      +.git/ 書込・読取とも禁止
+      +ファイル群
+    }
+  }
+
+  RepoFiles ..> WorkTree : 閉じ込めた相対パスでだけ読み書き
+  RepoFiles ..> RepoConfig
+  note for WorkTree "永続化先: ファイル（ProjectRepos.local_path の git 作業ツリー。commit・push は人間）"

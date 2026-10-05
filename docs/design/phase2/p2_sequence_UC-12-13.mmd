@@ -1,0 +1,48 @@
+%% シーケンス図 UC-12 暴走を止める ＋ UC-13 失敗を beads で検出する — task_ambi_v4 第2フェーズ
+%% 出典: 04_usecase_desc.csv UC-12/13／付録：AI 制御 §3.1-3.3／crewai_ai_control P1-P5／D04-a,b／D06-g,i,k
+%% 関連 DM: DM-18 実行／DM-20 計測／DM-11 LLM プロファイル（T）／DM-12 上限ポリシー／DM-21 失敗イベント／DM-13 issue／DM-16 コメント
+sequenceDiagram
+  autonumber
+  participant OL as 外側ループ（実行 DM-18）
+  participant Crew as 実行器 CrewAI
+  participant Icpt as 上限監視 Interceptor<br/>（HTTP transport 層）
+  participant Det as 失敗検出器<br/>（イベント購読・出力検査）
+  participant LLM as LLM API
+  participant BD as beads（bd CLI）
+  participant Log as 構造化ログ
+  actor Me as 自分
+
+  Note over Icpt: 上限 = 上限ポリシー DM-12（global＋PJ 上書き）／閾値 T = プロファイル DM-11 の context_window から導出
+  OL->>Crew: kickoff
+  loop LLM 呼び出しごと
+    Crew->>Icpt: request
+    Icpt->>Icpt: 計測 DM-20（送信前トークン／リクエスト数／コスト累計）
+    alt 送信前トークン > T または 回数・コスト上限超過
+      Icpt-->>Crew: 停止（要約器は作らない。三層リトライの積は内側で縮める D04-a）
+      Icpt->>Det: 失敗イベント F（ctx超過 or 上限停止＋実測値）
+    else
+      Icpt->>LLM: request
+      LLM-->>Icpt: response
+      Icpt-->>Crew: response
+      Icpt->>Det: usage 欠落／finish_reason=length など観測
+    end
+  end
+  Crew-->>Det: BaseEvent（LLMCallFailed×2 は重複排除／guardrail／TaskOutput 内容）
+  Crew-->>OL: 戻り値（正常終了でも品質は保証しない X-3）
+  Det->>Det: 等級付け F / W / I（等級表は参考程度 R-09）
+
+  alt F（失敗）
+    Det->>BD: bd update ラベル state:failing ＋ claim 解放（close しない）
+    Det->>BD: bd comment 封筒（等級・種類・実測値）
+  else W（警告付き成功）
+    Det->>BD: bd close ＋ bd comment 封筒
+  else I（情報）
+    Det->>OL: 実行履歴にのみ付記（bd には書かない）
+  end
+  Det->>BD: 確認読取 bd show / bd comments（rc は見ない D04-b）
+  alt 反映が読めない／bd 不達
+    Det->>Log: 停止痕跡（run_id・issue・封筒・不達理由）
+    Det-->>OL: 停止（黙って進まない P3）
+  end
+  Me->>BD: beads-ui / bd で failing・封筒を検出
+  Note over Me: 対処（指示見直し UC-03／取り下げ UC-06 据え置き）は人間の判断。制御層は止めて報告するまで

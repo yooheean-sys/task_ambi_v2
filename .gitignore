@@ -1,0 +1,21 @@
+.venv/
+
+.env
+task_ambi_data/
+__pycache__
+.DS_Store
+.pytest_cache/
+.ruff_cache/
+.uv-cache/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+.beads
+
+# キャッシュ・成果物ディレクトリ
+.grimp_cache/
+.import_linter_cache/
+outcome/

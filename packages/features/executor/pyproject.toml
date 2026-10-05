@@ -1,0 +1,22 @@
+[project]
+name = "executor"
+version = "0.1.0"
+description = "executor — CrewAI 実行器（1 kickoff の組立・実行・中立型への翻訳）"
+requires-python = ">=3.13"
+dependencies = [
+    "common",
+    # マイナー上限で切る。翻訳対象（event_allowlist）が版依存の実クラス名を握るため、
+    # 版を上げる作業に本宣言の編集を挟ませて見直しを強制する（Clarifications Q4・SD-01）。
+    "crewai>=1.15.17,<1.16",
+    "httpx",
+    # FR-022a の `dotenv_values` 直読みが import する。宣言しないと pydantic-settings の
+    # 推移依存に暗黙に乗る（SD-17）。
+    "python-dotenv",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/executor"]

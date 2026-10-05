@@ -1,0 +1,107 @@
+%% モジュール依存関係図（C4 Level 3 相当）— task_ambi_v4 第4フェーズ
+%% 出典: p3_bounded_context.mmd／p3_bounded_context_notes.md §3-4／憲章 §1-§3・§7-5／D08／D09
+%% 凡例: 太線 ==> 「Protocol を実装」／破線 -.-> 「Protocol に依存（利用）」／実線 --> 配線・HTTP・外部システム
+%% 規約（憲章 §1）: feature 間の直接 import は全面禁止。矢印は必ず common/interfaces の Protocol に向く。
+%%   本図に feature MOD → feature MOD の直接辺は 0 本（python3 で機械検査済み。notes §5）
+%% composition root = apps/api（build(deps) を依存順に呼び Protocol 実装を接続。順序は notes §4）
+%% 改訂 2026-08-18（第4.5フェーズ DEC-002）: 受け渡し型 22 件を kernel から common/interfaces/<提供 MOD>.py へ移した（憲章 §1/§3）。対応表は notes §2
+%% 改訂 2026-08-20（P5-R1 D16）: AI 設定の CrewAI 規約化（agents.yaml／tasks.yaml）。settings・stages のラベルを改訂、契約 csv に IF-50（SettingsReader.get_tasks）。辺は不変
+flowchart TB
+  Me((自分))
+
+  subgraph APPS["apps（起動エントリ。業務ロジックなし）"]
+    direction LR
+    API["apps/api main.py<br/>= composition root<br/>FastAPI 1 プロセス・全 router include<br/>build(deps) を依存順に呼び Protocol 実装を接続"]
+    UI["apps/ui main.py<br/>Streamlit の器<br/>settings.ui／trigger.ui を束ねる<br/>app を HTTP で叩くのみ"]
+  end
+
+  subgraph FEATURES["packages/features（8 MOD。同一 BC 内でも直接 import 禁止）"]
+    trigger["trigger（BC-06 トリガー）<br/>daemon・APScheduler・watchdog・REST・UI<br/>所有: DM-22〜25／領域 B・履歴 csv・DL"]
+    orchestrator["orchestrator（BC-03 分解・遂行）<br/>外側ループ・claim・段解決・recover_orphans<br/>盤面/vault 依存ゲート・起票 1 箇所・close<br/>single-flight・kickoff 保持・POST /kickoffs<br/>所有: DM-18/19"]
+    stages["stages（BC-03 分解・遂行）<br/>プロンプト組立（テンプレートは引数で受ける D16）<br/>提案の形のゲート・outcome トークン抽出<br/>外部依存なし（他 Protocol を使わない）<br/>所有: DM-08（構造属性）"]
+    executor["executor（BC-03 分解・遂行）<br/>CrewAI Crew/Agent/Task 構築・LLM 構築<br/>Tools（propose/record_progress/vault 読書/run_command）<br/>提案を収集して返却"]
+    settings["settings（BC-01 設定）<br/>PJ・agents.yaml（メンバ・ペルソナ既定）・tasks.yaml（段テンプレート）<br/>台帳・policy・rules・hooks・LLM プロファイル・上限・コマンド定義<br/>validate・enforce・resolve_command・設定 UI<br/>所有: DM-01〜07/09/11/12/26/27／領域 A"]
+    board["board（BC-02 盤面）<br/>beads アダプタ（bd CLI のみ）<br/>盤面導出 children_of／open_question_of／確認読取<br/>所有: DM-13〜16／beads"]
+    vault["vault（BC-04 成果物）<br/>vault 領域アダプタ・P1 ゲート<br/>（外縁・禁止文字・不在検出）<br/>所有: DM-17／Obsidian vault"]
+    monitor["monitor（BC-05 実行監視）<br/>LLM HTTP Hook・計測・失敗検出<br/>等級 F/W/I・封筒・bd 写像<br/>所有: DM-20/21"]
+  end
+
+  subgraph COMMON["packages/common（実装を持たない契約＋全 MOD 共用の基盤）"]
+    subgraph IFACES["common/interfaces（提供 MOD 単位に 1 ファイル。役割別 Protocol＋その受け渡し型。DEC-002）"]
+      direction LR
+      IF_ORCH["orchestrator.py<br/>KickoffRunner"]
+      IF_STAGES["stages.py<br/>StageCatalog<br/>ProposalGate"]
+      IF_EXEC["executor.py<br/>CrewExecutor"]
+      IF_SETTINGS["settings.py<br/>SettingsReader・MemberResolver<br/>Authorizer・CommandRegistry"]
+      IF_BOARD["board.py<br/>BoardReader<br/>BoardWriter"]
+      IF_VAULT["vault.py<br/>VaultReader<br/>OutcomeWriter"]
+      IF_MONITOR["monitor.py<br/>RunMonitor<br/>LLMHttpHook・RunHalted"]
+    end
+    KERNEL["kernel（共有カーネル）<br/>列挙: persona_key・段名・ラベル語彙<br/>log 基盤: correlation_id contextvar・構造化ログ<br/>共通例外の基底（受け渡し型は置かない。DEC-002）"]
+  end
+
+  BEADS[("beads（bd CLI）<br/>beads-ui は外部の人間向け画面")]
+  VAULTFS[("Obsidian vault<br/>/mnt/c 経由。人間所有")]
+  CFGA[("設定ファイル領域 A<br/>＋ .env の api_key 参照")]
+  CFGB[("設定ファイル領域 B<br/>実行履歴 csv・DL フォルダ")]
+  LLM[("LLM API<br/>OpenAI 互換 HTTP")]
+
+  %% ---- 実装（提供）----
+  orchestrator ==>|implements| IF_ORCH
+  stages ==>|implements| IF_STAGES
+  executor ==>|implements| IF_EXEC
+  settings ==>|implements| IF_SETTINGS
+  board ==>|implements| IF_BOARD
+  vault ==>|implements| IF_VAULT
+  monitor ==>|implements| IF_MONITOR
+
+  %% ---- 利用（依存は Protocol にのみ向く）----
+  trigger -.->|KickoffRunner.run（同期）| IF_ORCH
+  orchestrator -.->|StageCatalog・ProposalGate| IF_STAGES
+  orchestrator -.->|CrewExecutor.run| IF_EXEC
+  orchestrator -.->|SettingsReader・MemberResolver| IF_SETTINGS
+  orchestrator -.->|BoardReader・BoardWriter| IF_BOARD
+  orchestrator -.->|check_project_folders・outcome_exists| IF_VAULT
+  orchestrator -.->|RunMonitor.begin/finish| IF_MONITOR
+  executor -.->|Authorizer・CommandRegistry（Tools）| IF_SETTINGS
+  executor -.->|show・comment（Tools）| IF_BOARD
+  executor -.->|VaultReader・OutcomeWriter（Tools）| IF_VAULT
+  executor -.->|LLMHttpHook を LLM 構築時に装着| IF_MONITOR
+  monitor -.->|失敗写像 set_labels/release/close/comment＋確認読取| IF_BOARD
+  settings -.->|has_open_issues（削除ガード）| IF_BOARD
+  settings -.->|check_project_folders（登録時）| IF_VAULT
+  FEATURES -.->|全 MOD が列挙・log 基盤・共通例外を参照| KERNEL
+
+  %% ---- 配線・HTTP ----
+  API -->|build deps 依存順: board,vault → settings → monitor → stages,executor → orchestrator → trigger| FEATURES
+  UI -->|HTTP のみ| API
+  UI -.->|ui.py を import して束ねる| settings
+  UI -.->|ui.py を import して束ねる| trigger
+  Me -->|設定 UI・トリガー UI| UI
+  Me -->|POST /kickoffs（human 起動）| API
+
+  %% ---- 外部システム（所有 MOD のみが触る）----
+  board -->|bd CLI| BEADS
+  vault -->|ファイル読書| VAULTFS
+  settings -->|読書| CFGA
+  trigger -->|読書・追記・監視| CFGB
+  executor -->|HTTP（Hook 経由で monitor が観測・停止）| LLM
+
+  classDef mod fill:#eef5ff,stroke:#3a6ea5,stroke-width:1px
+  classDef iface fill:#fff8e1,stroke:#b58900,stroke-width:1px
+  classDef ext fill:#f4f4f4,stroke:#777,stroke-dasharray:4 2
+  classDef app fill:#eefaf0,stroke:#2e7d32
+  class trigger,orchestrator,stages,executor,settings,board,vault,monitor mod
+  class IF_ORCH,IF_STAGES,IF_EXEC,IF_SETTINGS,IF_BOARD,IF_VAULT,IF_MONITOR,KERNEL iface
+  class BEADS,VAULTFS,CFGA,CFGB,LLM ext
+  class API,UI app
+
+%% ---- BC : MOD 対応表（1:1 でない BC は BC-03 のみ）----
+%% | BC | MOD | 切った理由 |
+%% |---|---|---|
+%% | BC-01 設定 | settings | 1 MOD。UC-07 validate がメンバ⊆policy／policy⊆台帳／cmd⊆定義を一括検査するため 2 分割は相互依存になる（D09-a）|
+%% | BC-02 盤面 | board | 1:1 |
+%% | BC-03 分解・遂行 | orchestrator／stages／executor | 行数（≈3,800 行相当）と変更頻度（プロンプト≫ループ≫CrewAI 依存）で 3 分割。stages は外部依存なし（D09-a/f）|
+%% | BC-04 成果物 | vault | 1:1 |
+%% | BC-05 実行監視 | monitor | 1:1 |
+%% | BC-06 トリガー | trigger | 1:1 |

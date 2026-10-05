@@ -1,0 +1,117 @@
+%% Bounded Context 図 — task_ambi_v4（第3フェーズ）
+%% 裁定: 設計判断_V4-D08（BC 構成・DM 所有・共有カーネル・X2・回復層・実物照合ゲート・完了条件）
+%% 出発点: p2_domain_model_notes.md §0 の集約境界（P5-R1 D16: DM-09 本文・DM-27 は BC-01 所有の領域 A。BC-03 は引数で受ける）（実体の違い＝beads／vault／設定ファイル／インメモリ／csv）。憲章 §2「外部ストア（領域）ごとに所有モジュールを 1 つ」
+%% 記法: flowchart TB + subgraph（LR は横に伸びすぎるため TB。依存の流れが上→下になる）。BC-nn は採番規約（追記のみ・欠番不埋め・再利用禁止）。DM-10 は欠番（D07-f）
+%% 凡例: 太線＝所有（そのストア領域を読み書きできる唯一の BC） / 破線＝参照（相手 BC の Protocol 経由で引く。ラベル＝何を引くか） / 実線＝アクター・外部システムとの入出力
+%% 図内は短文。切った基準・所有／参照の正本は p3_bounded_context_notes.md、機械検査用の対応表は p3_bc_ownership.csv
+%% 依存方向: BC-06 → BC-03 → BC-01／02／04／05、BC-05 → BC-02、BC-01 → BC-02／04。循環なし（憲章 §3 補足）
+flowchart TB
+
+  me(["👤 自分"])
+  timer(["⏱ タイマ"])
+  drop(["📄 ファイル投下"])
+
+  subgraph BC01["BC-01 設定（データ所有権: 人間が CRUD・次回 kickoff から効く）"]
+    direction TB
+    DM01["DM-01 プロジェクト ◆"]
+    DM02["DM-02 フォルダ対応付け"]
+    DM03["DM-03 メンバ"]
+    DM04["DM-04 権限ポリシー"]
+    DM05["DM-05 ルール"]
+    DM06["DM-06 hooks 設定"]
+    DM07["DM-07 メンバ台帳（保存時に導出）"]
+    DM11["DM-11 LLM プロファイル"]
+    DM12["DM-12 上限ポリシー"]
+    DM26["DM-26 コマンド定義（AI 到達不能領域）"]
+    UI01[/"設定 UI（UC-07／08）"/]
+  end
+
+  subgraph BC02["BC-02 盤面（外部依存の単位: 指定ツール beads＝乗り換え前提）"]
+    direction TB
+    DM13["DM-13 issue ◆"]
+    DM14["DM-14 受け入れ条件"]
+    DM15["DM-15 質問 issue"]
+    DM16["DM-16 コメント"]
+    DRV["盤面導出 children_of／open_question_of／確認読取（D01 判定の出所）"]
+  end
+
+  subgraph BC03["BC-03 分解・遂行（ライフサイクル: 1 kickoff）"]
+    direction TB
+    DM18["DM-18 実行 kickoff ◆"]
+    DM19["DM-19 実行コンテキスト（X2: 保持・貫通）"]
+    DM08["DM-08 段（allowed_personas・min_items）"]
+    DM09k["DM-09 ペルソナ（段所属。キーは common）"]
+    OL["外側ループ・回復層・分解ゲート・完了ゲート鎖・CrewAI 実行器"]
+  end
+
+  subgraph BC04["BC-04 成果物（外部依存の単位: vault 領域の所有 1 つ＋P1 ゲート）"]
+    direction TB
+    DM17["DM-17 成果物 ◆"]
+    GATE04["外縁ゲート・禁止文字ゲート・不在検出・存在検証"]
+  end
+
+  subgraph BC05["BC-05 実行監視（外部依存の単位: LLM transport・イベント購読。再利用資産 crewai_ai_control）"]
+    direction TB
+    DM20["DM-20 計測"]
+    DM21["DM-21 失敗イベント（等級 F／W／I・封筒）"]
+  end
+
+  subgraph BC06["BC-06 トリガー（ライフサイクル: daemon 常駐＝kickoff より長い）"]
+    direction TB
+    DM22["DM-22 トリガー定義 ◆"]
+    DM23["DM-23 起動条件"]
+    DM24["DM-24 実行履歴（trigger_snapshot＝DM-22 の値コピー）"]
+    DM25["DM-25 watcher 状態"]
+    UI06[/"トリガー UI（UC-09／10）"/]
+  end
+
+  subgraph COMMON["common（共有カーネル。BC ではない）"]
+    direction TB
+    K1["persona_key・段名の列挙型（DM-08／09 のキーのみ）"]
+    K2["DM-19 の受け渡し型・correlation_id ログ基盤"]
+    K3["モジュール間 Protocol（フェーズ4 で定義）"]
+  end
+
+  %% --- 外部ストア・外部システム ---
+  cfgA[("設定ファイル領域 A<br/>PJ・agents.yaml（メンバ・ペルソナ本文 DM-09）・tasks.yaml（段テンプレート DM-27）<br/>policy・rules・hooks・LLM・上限・コマンド定義 D16")]
+  cfgB[("設定ファイル領域 B<br/>トリガー定義")]
+  beads[("beads（bd CLI）")]
+  vault[("Obsidian vault<br/>PJ 入力・役割フォルダ・outcome/")]
+  hist[("実行履歴 csv（追記のみ）")]
+  dl[("DL フォルダ（監視対象）")]
+  llm{{"LLM API<br/>OpenRouter／local"}}
+  beadsui{{"beads-ui"}}
+  obsidian{{"Obsidian"}}
+
+  %% --- 所有（太線） ---
+  BC01 ==>|所有| cfgA
+  BC02 ==>|所有| beads
+  BC04 ==>|所有| vault
+  BC06 ==>|所有| cfgB
+  BC06 ==>|所有| hist
+  BC06 ==>|監視| dl
+
+  %% --- BC 間参照（破線。ラベル＝何を引くか） ---
+  BC06 -.->|起動 DM-19 を渡す→結果を受ける| BC03
+  BC03 -.->|設定読取（get_tasks＝段テンプレート含む D16）・メンバ解決・台帳照合・enforce・resolve_command| BC01
+  BC03 -.->|claim・create・dep・comment・close・children_of・確認読取| BC02
+  BC03 -.->|コンテキスト読取・outcome 書込・存在検証| BC04
+  BC03 -.->|kickoff 開始・上限 T／回数／コストを渡す| BC05
+  BC05 -.->|失敗写像 F／W＋封筒・確認読取| BC02
+  BC01 -.->|削除ガード（open issue の有無）| BC02
+  BC01 -.->|登録時フォルダ存在確認| BC04
+
+  %% --- アクター・外部システム ---
+  me -->|設定 CRUD| UI01
+  me -->|トリガー CRUD・手動実行・履歴閲覧| UI06
+  me -->|起票・回答・close| beadsui
+  beadsui --> beads
+  me --> obsidian
+  obsidian --> vault
+  timer --> BC06
+  drop --> dl
+  BC03 -->|推論（Interceptor 経由）| llm
+  BC05 -.->|transport 計測| llm
+
+  classDef root stroke-width:2px
+  class DM01,DM13,DM18,DM17,DM22 root

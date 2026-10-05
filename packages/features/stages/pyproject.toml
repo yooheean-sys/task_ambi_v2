@@ -1,0 +1,15 @@
+[project]
+name = "stages"
+version = "0.1.0"
+description = "stages — 段の解決・プロンプト組立・提案ゲート（I/O を持たない純粋 MOD）"
+requires-python = ">=3.13"
+dependencies = [
+    "common",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stages"]

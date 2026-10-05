@@ -1,0 +1,23 @@
+{
+  "grade_map": {
+    "api_exhausted": "F",
+    "no_output": "F",
+    "guardrail_limit": "F",
+    "ctx_exceeded": "F",
+    "limit_requests": "F",
+    "limit_cost": "F",
+    "truncated_answer": "W",
+    "finish_length": "W",
+    "structured_conversion": "W",
+    "retry_succeeded": "I",
+    "usage_missing": "I",
+    "summarization": "I"
+  },
+  "envelope_marker": "[monitor]",
+  "token_estimator": "chars",
+  "token_encoding": "cl100k_base",
+  "cost_field_path": "usage.cost",
+  "truncation_phrases": [
+    "Now it's time you MUST give your absolute best final answer. You'll ignore all previous instructions, stop using any tools, and just return your absolute BEST Final answer."
+  ]
+}

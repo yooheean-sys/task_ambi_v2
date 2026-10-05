@@ -1,0 +1,24 @@
+[
+  {
+    "id": "UW-001",
+    "source": "ui/main.py:22",
+    "context": "const=NO_PAGES_MESSAGE",
+    "text": "有効化された UI ページがありません",
+    "pattern": null,
+    "rewritten": false,
+    "page": "shell",
+    "scenario": "shell:zero-pages",
+    "candidate": "C-353"
+  },
+  {
+    "id": "UW-002",
+    "source": "ui/main.py:41",
+    "context": "func=main; call=st.caption",
+    "text": "接続先 app: {base_url}",
+    "pattern": "接続先\\ app:\\ (?s:.*)",
+    "rewritten": false,
+    "page": "shell",
+    "scenario": "shell:zero-pages",
+    "candidate": "C-356"
+  }
+]

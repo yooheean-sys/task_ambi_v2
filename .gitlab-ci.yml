@@ -1,0 +1,61 @@
+# CI ゲート（憲章 §4「GitLab Runner CI（lint / 型チェック / import-linter / pytest のみ。
+# イメージビルド工程は持たない）」）。非コンテナ＝shell executor の Runner を tags で指す。
+# 1 ゲート＝1 ジョブに分ける（&& で連ねると最初の失敗で後続が隠れる。FR-023）。
+#
+# 前提: tags: [task-ambi] に一致する GitLab Runner が登録され、uv と bd が導入済みであること。
+#       Runner の登録自体は本 feature の範囲外（リポジトリ外の環境整備）。未登録なら手元の
+#       4 コマンド（uv run ruff check . / pyright / lint-imports / pytest）が当面の代替になる。
+
+stages: [preflight, verify]
+
+variables:
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+
+default:
+  tags: [task-ambi]
+  cache:
+    key: "uv-$CI_COMMIT_REF_SLUG"
+    paths: [.uv-cache]
+  before_script:
+    - uv --version
+    - uv sync --frozen
+
+# 外部ツール bd の存在確認と版の記録。不在ならここで fail-fast し verify へ進まない（FR-025）。
+preflight:bd:
+  stage: preflight
+  before_script: []          # uv sync を走らせない（bd の確認だけを行う）
+  script:
+    - |
+      command -v bd > /dev/null || {
+        echo "ERROR: 'bd' が PATH 上に見つかりません。"
+        echo "  PATH=$PATH"
+        echo "  Runner に beads(bd) を導入してください（手順は環境情報ファイル）。"
+        exit 1
+      }
+    - command -v bd | tee bd_path.txt
+    - bd version | tee bd_version.txt
+  artifacts:
+    paths: [bd_path.txt, bd_version.txt]
+    expire_in: 30 days
+    when: always
+
+lint:
+  stage: verify
+  script:
+    - uv run ruff check .
+    - uv run ruff format --check .
+
+typecheck:
+  stage: verify
+  script:
+    - uv run pyright
+
+imports:
+  stage: verify
+  script:
+    - uv run lint-imports
+
+test:
+  stage: verify
+  script:
+    - uv run pytest

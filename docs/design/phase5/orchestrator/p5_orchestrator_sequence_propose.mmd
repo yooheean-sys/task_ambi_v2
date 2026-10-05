@@ -1,0 +1,50 @@
+%% orchestrator 内部シーケンス 副図 — propose 段（program／project／subrequest）: 提案の検証 → 差し戻し → 起票順序不変条件（子起票→兄弟依存 B1→dependents 付け替え→確認読取→親 close）— task_ambi_v4 第5フェーズ
+%% 出典: p2_sequence_UC-I1.mmd 13-21・29-37／D01-c／D06-a,f／FN-05/47/48/49／PoC loop.py（_handle_issue・_flush_proposals、RETURN_MARKER）
+sequenceDiagram
+  autonumber
+  participant Svc as orchestrator/service.py
+  participant St as StageCatalog／ProposalGate
+  participant X as CrewExecutor
+  participant B as BoardReader／BoardWriter
+
+  Svc->>B: children_of(issue_id)（既存の子＝existing_children。D01 二重ガード: 子が居れば起票しない）
+  alt 既に子がいる（クラッシュ窓の再入）
+    Svc->>Svc: 人間へ渡す統一経路（failing＋[orchestrator] 子 ID 一覧＋release）。自動再投入しない（D01-b）
+  end
+  loop 差し戻し（上限 max_returns。回数は [orchestrator] 差し戻しコメントを comments で数える＝再起動で消えない）
+    Svc->>St: validate_proposal(outcome.proposal, spec, existing_children titles)
+    alt GateResult.ok == False
+      Svc->>B: comment(issue_id, "[orchestrator] 差し戻し: problems", actor)
+      Svc->>St: build_prompt(spec, member, rules, templates, ctx, feedback=problems)（D16-h）
+      Svc->>X: run(CrewSpec)（同 kickoff 内で再提案）
+    else ok
+      Svc->>Svc: 抜ける
+    end
+  end
+  alt 上限到達
+    Svc->>Svc: 人間へ渡す統一経路（failing＋理由＋release）
+  else 合格
+    Svc->>St: extract_outcome_tokens(親 acceptance) と 各子 acceptance（**被覆の突合**。合格後・起票の前 B-25）
+    alt 親の鍵 − 子の鍵 が非空（被覆に欠け）
+      Svc->>B: comment(issue_id, "[orchestrator] 差し戻し[被覆]: 覆われていない成果物 …")（例外にしない）
+    end
+    Note over Svc,St: 突合の鍵は outcome/ 接頭辞を剥がした残り。親に正準形のトークンが無ければ何も言わない
+    loop GateResult.order（topo 順）で子ごと
+      Svc->>Svc: IssueSpec: title/summary/description/acceptance、labels＝spec.child_labels＋project:<key>＋persona:<persona>＋role:executor（FN-05。親のラベル継承は board が切る）、parent=issue_id
+      Svc->>B: create(IssueSpec, actor=**member.bd_actor**（AI の行為 P5D-037）) → child_id（BoardWriteUnverified なら UNSAFE）
+    end
+    loop depends_on（B1 兄弟依存）
+      Svc->>B: add_dependency(child, blocked_by=先行の兄弟)
+    end
+    Svc->>B: move_dependents(issue_id, 各子)（親に blocks 依存する側を子へ付け替え）
+    alt 途中失敗（BoardUnavailable／BoardWriteUnverified）
+      Svc->>Svc: UNSAFE: 人間へ渡す統一経路（failing＋[orchestrator] 済み処理の一覧（作成済み子・張れた辺）＋release）。自動再試行しない（FN-49・D01-b）
+    else
+      Svc->>B: children_of(issue_id)（確認読取: 起票した子が全て盤面にある）
+      alt observations に single_child
+        Svc->>B: set_labels(issue_id, add=[note:single-child])（観測印 D06-f）
+      end
+      Svc->>Svc: CloseIntent(reason="分解完了 n 件", actor=member.bd_actor) を返す
+  end
+  Note over Svc,B: **close は主図の finish（monitor）の後に 1 回**行い show で確認する（C-1）。先に閉じると等級 W の抑止（FR-068）が空文になり close が 2 回飛ぶ
+    end

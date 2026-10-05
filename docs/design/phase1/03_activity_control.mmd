@@ -1,0 +1,40 @@
+%% アクティビティ図 (4/4): 暴走停止と失敗検出 — UC-12 / UC-13
+%% 出典: 04_usecase_desc.csv UC-12・UC-13 / 2. やりたいこと 要件①②③ / 付録：AI 制御機能 §2・§3.2 / 3-4 X-3・X-7 / 7-2 D・E / 4. 設計原則 P2・P3
+%% 要点: 制御は CrewAI に預けず自前（P2）。戻り値以外の観測点で失敗を捕捉し、成功と区別できる形で beads に残す（P3）。
+%%       bd への写像は確認読取で検証する。bd 側が信用できない場合は停止（D04-b）。上限値は三層リトライの積で見積もる（D04-a）。
+flowchart TD
+  S([kickoff 開始]) --> B1[送信前: プロンプトのトークン数を計測]
+  B1 --> B2{閾値超過?<br/>128k 前提}
+  B2 -- 超過 --> STOP[停止<br/>要約器は作らない]
+  B2 -- 以内 --> C1[LLM 呼び出し<br/>HTTP transport 層 Interceptor 経由]
+  C1 --> C2[リクエスト数・コストを累積]
+  C2 --> C3{回数 / コスト上限超過?}
+  C3 -- 超過 --> STOP
+  C3 -- 以内 --> O1{応答の観測<br/>戻り値以外の観測点}
+  O1 -- HTTP 429 / 500 / 503 --> RT{一過性リトライ<br/>上限内?}
+  RT -- 以内 --> C1
+  RT -- 超過 --> CLS
+  O1 -- ペイロード不正 / choices 欠落 /<br/>finish_reason=length / パーサ失敗 --> CLS
+  O1 -- 正常 --> N1{kickoff 継続?}
+  N1 -- 次の呼び出し --> B1
+  N1 -- 完了 --> DONE([UC-I1 の完了ゲートへ])
+
+  STOP --> CLS[失敗等級に分類 F / W / I<br/>失敗等級表は参考程度]
+  CLS --> M1[bd に写像<br/>コメント / 状態遷移 / kind:question 起票]
+  M1 --> V1[確認読取<br/>bd show / bd comments で反映を検証<br/>rc は見ない]
+  V1 --> V2{盤面に反映されている?}
+  V2 -- はい --> M2([自分が beads-ui / bd で検出])
+  V2 -- 不一致 / bd 不達 --> HALT[停止<br/>ローカルログに痕跡を残す<br/>黙って進まない P3]
+
+  %% 注意点（P2 実測）
+  W1[/CrewAI 側の max_execution_time はツール実行を割り込まない<br/>max_rpm は強制最終回答をレート制限しない<br/>Agent.guardrail は Crew 経路で黙って無視される<br/>→ ここに描いた制御はすべて自前で持つ/]
+  W2[/三層リトライの積 openai SDK × CrewAI × executor<br/>→ 外側のリトライを足すと多重化する。上限値は積で見積もる/]
+  W3[/戻り値は両端で信用できない: CrewAI 正常終了≠品質、<br/>bd 複数 ID close の部分失敗で rc=0（X-3）/]
+  C1 -.-> W1
+  RT -.-> W2
+  V1 -.-> W3
+
+  classDef note fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 3;
+  classDef stop fill:#fdecea,stroke:#c0392b;
+  class W1,W2,W3 note;
+  class STOP,HALT stop;

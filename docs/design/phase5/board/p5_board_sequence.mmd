@@ -1,0 +1,81 @@
+%% board（BC-02 盤面）内部シーケンス 主図 — 起票 1 周（claim → show → create×n → 依存張り → 確認読取 → close）— task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-01/04/10〜14/19／p2_sequence_UC-I1／D01／D04-b／FN-49／PoC bd.py（PoC 基準版、読取のみ）
+%% レーン規約（D11-c）: 自 MOD 内部＝憲章 §3 のファイル単位／呼び手＝呼ばれる Protocol 名のレーン（P5D-003）／外部＝実体レーン。kernel（Labels・LoggerFactory・CorrelationContext）は Note のみ
+%% 主図の対象: 利用側の 1 周回で board が受ける呼び出し列。読取系の導出（list_working／open_question_of／has_open_issues／comments）と写像系（set_labels／release）は副図 p5_board_sequence_reads.mmd
+sequenceDiagram
+  autonumber
+  participant Caller as BoardWriter／BoardReader
+  participant Svc as board/service.py<br/>（BoardService＝両 Protocol の実装）
+  participant Repo as board/repository.py<br/>（BdCli アダプタ）
+  participant BD as bd CLI
+
+  Note over Svc,BD: 全呼び出し共通（board-F01）: サブコマンドのホワイトリスト／actor は呼び出しごとに env BEADS_ACTOR で注入／--json 付与<br/>書込は MOD 内ロックで直列化（embedded Dolt 単一ライター）／ロック文言なら config の回数・間隔で待って再実行（P5D-004）<br/>各実行を構造化ログ（LoggerFactory、correlation_id 付き）に残す。rc≠0 は BdCommandError → 上限超過・不達は BoardUnavailable、not-found は IssueNotFound に翻訳
+
+  Caller->>Svc: claim_next(filter: ClaimFilter, actor)
+  Svc->>Svc: ラベル集合＋project:<key> を --label 引数に組む（kernel Labels）
+  Svc->>Repo: run(["ready","--claim","--limit","1","--label",…], actor, write=True)
+  Repo->>BD: bd ready --claim --limit 1 --label … --json
+  BD-->>Repo: 1 行 | 空
+  alt ready なし
+    Svc-->>Caller: None
+  else claim 成功
+    Svc->>Repo: run(["update", id, "--add-label", "state:working"], actor, write=True)
+    Repo->>BD: bd update … --add-label state:working
+    Svc-->>Caller: Issue（models.py で bd JSON → Issue に写像）
+  end
+
+  Caller->>Svc: show(issue_id)
+  Svc->>Repo: run(["show", issue_id], write=False)
+  Repo->>BD: bd show <id> --json
+  alt 存在しない（bd が not found を返す）
+    Repo-->>Svc: BdCommandError(not_found)
+    Svc-->>Caller: IssueNotFound
+  else
+    BD-->>Repo: issue JSON（labels・parent・status・assignee・acceptance_criteria・dependencies）
+    Svc-->>Caller: Issue
+  end
+
+  loop 子 issue ごと（呼び手が起票順を保証。FN-49）
+    Caller->>Svc: create(spec: IssueSpec, actor)
+    Svc->>Repo: run(["create", "--title", title, "-d", …, "-p", …, "-t", …, "--parent", parent, "--no-inherit-labels", "-l", labels, "--acceptance", …], actor, write=True)（表題は位置引数でなく --title M-29）
+    Repo->>BD: bd create … --json
+    BD-->>Repo: {id, …}
+    Svc->>Repo: run(["show", new_id], write=False)（書込直後の読み戻し）
+    Repo->>BD: bd show <new_id> --json
+    alt 読み戻せない／labels・parent が spec と一致しない
+      Svc-->>Caller: BoardWriteUnverified（rc は成功の証拠にしない D04-b）
+    else
+      Svc-->>Caller: issue_id
+    end
+  end
+
+  Caller->>Svc: add_dependency(from_id, to_id, actor)
+  Svc->>Repo: run(["dep","add", from_id, "--blocked-by", to_id], actor, write=True)
+  Repo->>BD: bd dep add … --blocked-by …
+  Svc-->>Caller: None（冪等: 既存の辺は rc=0）
+
+  Caller->>Svc: move_dependents(old_id, new_id, actor)
+  Svc->>Repo: run(["dep","list", old_id, "--direction=up", "-t", "blocks"], write=False)
+  Repo->>BD: bd dep list … --json
+  BD-->>Repo: dependents（id・status・dependency_type）
+  loop dependent ごと
+    Svc->>Repo: run(["dep","add", dependent_id, "--blocked-by", new_id], actor, write=True)
+    Repo->>BD: bd dep add …
+  end
+  Svc-->>Caller: None
+
+  Caller->>Svc: children_of(parent_id)（確認読取。D01 判定の唯一の出所）
+  Svc->>Repo: run(["list","--parent", parent_id, "--all", "-n", "0"], write=False)
+  Repo->>BD: bd list --parent … --all -n 0 --json
+  BD-->>Repo: 直下の子（closed 含む・上限なし）
+  Svc-->>Caller: list[Issue]
+
+  Caller->>Svc: close(issue_id, reason, actor)
+  Svc->>Repo: run(["show", issue_id], write=False)
+  alt 既に closed
+    Svc-->>Caller: None（冪等・bd は打たない）
+  else
+    Svc->>Repo: run(["close", issue_id, "-r", reason], actor, write=True)
+    Repo->>BD: bd close … -r …
+    Svc-->>Caller: None（反映の確認は呼び手が show で行う。D04-b）
+  end

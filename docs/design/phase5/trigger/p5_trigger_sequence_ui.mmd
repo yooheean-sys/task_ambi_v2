@@ -1,0 +1,43 @@
+%% trigger（BC-06 トリガー）内部シーケンス 副図 — UC-09 トリガー CRUD・有効/無効・手動実行 ／ UC-10 一覧・履歴・watcher 生死の表示 ／ 退避経路 POST /hooks/file — task_ambi_v4 第5フェーズ
+%% 出典: 付録：トリガー §5／D06-j(1)(2)／D07-a,b／FN-29/30/32/33/34／P5D-039〜042。UI は HTTP で router を叩く（憲章 §4 注記）
+sequenceDiagram
+  autonumber
+  actor Me as 自分
+  participant UI as trigger/ui.py<br/>（Streamlit: トリガーページ）
+  participant R as trigger/router.py<br/>（/triggers・/history・/watcher・/hooks/file）
+  participant Svc as trigger/service.py
+  participant Sch as trigger/lib:apscheduler
+  participant W as trigger/repository.py
+  participant B as 設定ファイル領域 B
+  participant H as 実行履歴 csv
+
+  Me->>UI: 一覧を見る（種別・有効/無効・次回実行時刻・直近結果・watcher 生死）
+  UI->>R: GET /triggers／GET /watcher（HTTP）
+  R->>Svc: list_triggers()（定義＝領域 B の宣言が正）＋ Sch.get_jobs() の next_run_time ＋ watcher の生死（インメモリ DM-25）
+  R-->>UI: JSON
+  Me->>UI: 追加・編集・削除・有効/無効トグル（cron／interval／file、起動条件＝ラベル集合＋任意 project）
+  UI->>R: POST／PUT／DELETE／PATCH /triggers/{id}（HTTP）
+  R->>Svc: save_trigger(spec)／delete／toggle
+  Svc->>Svc: validate: cron 5 フィールド（秒なし）／interval ≥ config 最小／watch_dir は DOWNLOADS_DIR 相対（外縁検査）／既定トリガーは削除不可・間隔と有効/無効のみ変更可（FN-30）／起動条件の既定 role:executor
+  alt 違反
+    Svc-->>R: 422＋理由
+  else
+    Svc->>W: write_definitions()（triggers.yaml を一時ファイル→os.replace）
+    W->>B: 書込
+    Svc->>Sch: add_job／modify_job／remove_job／pause・resume（jobstore は本プロセスだけが触る。UI から直接触らせない 付録 §1）
+    Svc->>W: file トリガーなら watcher の追加・停止
+    Svc-->>R: 200（削除は次回以降の発火停止のみ。進行中 kickoff は完走 D06-j(2)）
+  end
+
+  Me->>UI: 手動実行
+  UI->>R: POST /triggers/{id}/run
+  R->>Svc: fire(snapshot, kind=manual) をワーカースレッドで起動
+  R-->>UI: 202（結果は履歴に）
+
+  Me->>UI: 履歴を見る
+  UI->>R: GET /history?month=YYYYMM
+  R->>W: read_history(month)（表示にのみ読む D07-b）
+  W->>H: history_YYYYMM.csv を読む
+  R-->>UI: 行一覧（run_id・kickoff_id・trigger・kind・開始終了・status（started のままの行＝未終了）・issues_ok/failing・notes・blame）
+
+  Note over R,Svc: 退避経路（付録 §3）: Windows 側 PowerShell FileSystemWatcher → POST /hooks/file {path}。router が完了検知（repository）を経て同じ fire(kind=file) に合流（P5D-042）。PollingObserver が R12-P4 で不合格なら config で watcher を止め hooks だけにする

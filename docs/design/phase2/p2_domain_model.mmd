@@ -1,0 +1,271 @@
+%% ドメインモデル — task_ambi_v4（第2フェーズ）
+%% 裁定: 設計判断_V4-D05（成果物形式）／設計判断_V4-D06（ID 正本・設定粒度・失敗写像 ほか）／設計判断_V4-D07（レビュー反映: トリガー実体・禁止文字・起票フォーム廃止・コマンド定義・組織テンプレート廃止・UC-08 エラー）／設計判断_V4-D16（P5-R1: AI 設定の agents.yaml／tasks.yaml 化。DM-03/05/07/09 改訂・DM-27 新設）
+%% 記法: classDiagram。<<aggregate root>> / <<entity>> / <<VO>> で区別。DM-nn は採番規約（追記のみ・欠番不埋め・再利用禁止）
+%% 各クラスの「実体」注記 = その概念の状態がどこに実在するか（beads／vault／設定ファイル／コード定数／インメモリ／構造化ログ／ローカル csv ログ）
+%% 図内では短文。説明の正本は p2_domain_model_notes.md（DM-nn で対応）
+%% 凡例: 実線ひし形=集約内包 / 白ひし形=参照 / 破線矢印=導出（P4: 宣言せず導く）
+classDiagram
+  direction LR
+
+  namespace プロジェクト集約_設定ファイル {
+    class Project["DM-01 プロジェクト"] {
+      <<aggregate root>>
+      +project_key : casbin キー規則
+      +name
+      +is_reserved : 統括=_program
+      +メンバは UC-07 で手動作成(D07-f)
+    }
+    class FolderMap["DM-02 フォルダ対応付け"] {
+      <<VO>>
+      +pj_input_dir : vault パス
+      +role_dirs : 役割→vault パス
+      +outcome_dir : PJ 直下 outcome/
+      +存在検証は kickoff 時(D04-d)
+    }
+    class Member["DM-03 メンバ"] {
+      <<entity>>
+      +member_id : project_key.persona_key
+      +persona_key : DM-09
+      +role : CrewAI Agent.role（旧 display_name を統合 D16）
+      +goal / backstory : agents.yaml（役割ルールを吸収）
+      +llm : DM-11 の name (任意。PJ→global→default D16-h)
+      +tools : ToolName 集合（装備。許可 DM-04 とは別層）
+      +skills : Agent.skills
+      +mcp : Agent.mcps ▲
+      +max_iter / max_rpm / max_execution_time (任意)
+    }
+    class Policy["DM-04 権限ポリシー"] {
+      <<VO>>
+      +model_conf
+      +rows : p/g 行 (subject=member:ID)
+      +PJ 別 1 セット
+    }
+    class Rules["DM-05 ルール"] {
+      <<VO>>
+      +pj_rules : PJ 共通→backstory 合成
+      +role_rules は廃止（D16。agents.yaml の backstory に吸収）
+    }
+    class Hooks["DM-06 hooks 設定"] {
+      <<VO>>
+      +ref : crewai.hooks 登録先
+      +agents : 絞り込み(任意)
+    }
+  }
+
+  namespace 台帳_設定ファイル {
+    class Registry["DM-07 メンバ台帳"] {
+      <<entity>>
+      +members : DM-03 全件（agents.yaml から導出 D16）
+      +human_actors : 自分(単一)
+      +bd_actor(member_id) 導出
+      +casbin_subject(member_id) 導出
+      +台帳外 actor は印を残す(P3)
+    }
+  }
+
+  namespace 段と設定_構造はコード定数_本文は設定ファイル {
+    class Stage["DM-08 段"] {
+      <<VO>>
+      +name : program|project|subrequest|child|plain
+      +require_labels / require_no_parent
+      +child_labels
+      +allowed_personas : DM-09 集合
+      +min_items : 既定 1 (D06)
+      +max_acceptance
+      +propose | execute
+    }
+    class Persona["DM-09 ペルソナ"] {
+      <<VO>>
+      +persona_key : 9 種（コード定数＝kernel 列挙）
+      +stage : ただ 1 つの段に属す（コード定数）
+      +role / goal / backstory : global/agents.yaml（設定ファイル D16）
+    }
+    class StageTemplate["DM-27 段テンプレート"] {
+      <<VO>>
+      +key : 7 種 = 段 5＋review_normal|review_final (D16-a)
+      +description / expected_output : ｛変数｝込み本文
+      +agent : 段の既定ペルソナ (任意 D16-f)
+      +tools : Task.tools (任意。Agent.tools を上書き)
+      +global→PJ のキー単位上書き
+    }
+    class LLMProfile["DM-11 LLM プロファイル"] {
+      <<entity>>
+      +name : openrouter | local
+      +base_url / model_id
+      +context_window
+      +api_key_ref : .env
+      +T = context_window − 余裕 (導出)
+    }
+    class LimitPolicy["DM-12 上限ポリシー"] {
+      <<VO>>
+      +scope : global | project_key
+      +max_requests_per_kickoff
+      +max_cost_per_kickoff
+      +T はここに持たない(DM-11 導出)
+    }
+    class CommandDef["DM-26 コマンド定義"] {
+      <<VO>>
+      +name : cmd:name の名前側
+      +argv : 固定リスト(shell=False)
+      +AI 到達不能な設定領域に置く
+      +validate で policy の cmd: と突合(D07-e)
+    }
+  }
+
+  namespace タスク集約_beads {
+    class Issue["DM-13 issue"] {
+      <<aggregate root>>
+      +id
+      +title / description
+      +labels : kind:* project:* persona:* role:executor state:* note:*
+      +status : open|in_progress|blocked|closed
+      +parent
+      +depends_on / blocks
+      +段 = resolve(kind, parent の有無)
+    }
+    class Acceptance["DM-14 受け入れ条件"] {
+      <<VO>>
+      +対象 / 前提 / 手順 / 判定
+      +grade : M | A | H
+      +outcome トークン
+    }
+    class Question["DM-15 質問 issue"] {
+      <<entity>>
+      +kind:question
+      +[要判断] タイトル
+      +試したこと / 詰まった理由 / 決めてほしいこと
+      +元 issue が blocks 依存
+    }
+    class Comment["DM-16 コメント"] {
+      <<entity>>
+      +actor : bd actor
+      +kind : 人間指示 | 回答 | 封筒
+      +body
+    }
+  }
+
+  namespace 成果物_vault {
+    class Outcome["DM-17 成果物"] {
+      <<entity>>
+      +path : PJ フォルダ/outcome/ 配下のみ
+      +書込境界 = outcome/ 外縁(構造)
+      +Win/mac 非互換＋Obsidian タイトル禁止文字を書込前ゲート(D07-c)
+    }
+  }
+
+  namespace 実行_インメモリと構造化ログ {
+    class Kickoff["DM-18 実行(kickoff)"] {
+      <<entity>>
+      +run_id
+      +issue_id / member_id
+      +context : DM-19
+      +metrics : DM-20
+      +failures : DM-21 0..*
+      +result : 成功 | UNSAFE | 停止
+    }
+    class ExecContext["DM-19 実行コンテキスト"] {
+      <<VO>>
+      +起動種別 : human|timer|file|manual
+      +trigger_snapshot : DM-22 の名・種別
+      +dropped_path : file 時のみ
+      +correlation_id
+      +持ち運ぶモジュールは X2(フェーズ3〜4)
+    }
+    class Metrics["DM-20 計測"] {
+      <<VO>>
+      +requests / cost / tokens_before_send
+      +HTTP transport 層で計測
+    }
+    class FailureEvent["DM-21 失敗イベント"] {
+      <<VO>>
+      +grade : F | W | I
+      +kind : API枯渇|出力なし|guardrail|ctx超過|打ち切り|途中切れ|変換|リトライ|usage欠落
+      +evidence : 実測値
+      +封筒 = grade+kind+evidence
+    }
+  }
+
+  namespace トリガー集約_設定ファイルとcsvログ {
+    class TriggerDef["DM-22 トリガー定義"] {
+      <<aggregate root>>
+      +id / name
+      +type : cron | interval | file
+      +spec : crontab | seconds | watch_dir
+      +condition : DM-23
+      +enabled
+      +is_default : ready 巡回(削除不可・間隔のみ可)
+    }
+    class LaunchCond["DM-23 起動条件"] {
+      <<VO>>
+      +labels : claim フィルタ(既定 role:executor)
+      +project_key : 任意
+    }
+    class RunHistory["DM-24 実行履歴"] {
+      <<entity>>
+      +run_id : DM-18
+      +trigger_snapshot : 名・種別(削除後も残る)
+      +起動種別 / start / end / duration
+      +status / blame
+    }
+    class WatcherState["DM-25 watcher 状態"] {
+      <<VO>>
+      +alive
+      +next_fire_at
+      +running_instances
+    }
+  }
+
+  %% --- 集約内包（実線ひし形） ---
+  Project "1" *-- "1" FolderMap : 対応付け
+  Project "1" *-- "1..*" Member : メンバ
+  Project "1" *-- "1" Policy : PJ 別 policy
+  Project "1" *-- "1" Rules : PJ 共通＋役割
+  Project "1" *-- "0..*" Hooks : PJ 単位
+  Issue "1" *-- "0..*" Acceptance : acceptance_criteria
+  Issue "1" *-- "0..*" Comment : comments
+  Issue "0..1" *-- "0..*" Issue : parent/children
+  Kickoff "1" *-- "1" ExecContext
+  Kickoff "1" *-- "1" Metrics
+  Kickoff "1" *-- "0..*" FailureEvent
+  TriggerDef "1" *-- "1" LaunchCond
+  TriggerDef "1" *-- "0..*" RunHistory : 発火
+
+  %% --- 参照（白ひし形） ---
+  Project "0..*" o-- "0..1" LimitPolicy : PJ 上書き
+  Member "0..*" o-- "0..1" LLMProfile : 割当(agents.yaml の llm。PJ→global→default D16-h)
+  Registry o-- Member : 台帳
+  Question --|> Issue : kind＝question
+  Question "1" o-- "1" Issue : 元 issue が blocks 依存
+  Issue "0..*" o-- "0..1" Project : project ラベル
+  Issue "1" o-- "1" Stage : kind ラベル×親の有無
+  Issue "0..1" o-- "0..*" Outcome : リーフの成果物
+  Kickoff "0..*" o-- "1" Issue : claim 対象
+  Kickoff "0..*" o-- "1" Member : 実行主体(bd actor)
+  RunHistory "0..*" o-- "0..1" Kickoff : 起動した実行
+  Stage "1" o-- "1..*" Persona : allowed_personas
+  FailureEvent ..> Comment : 写像(F/W 封筒, D06)
+  FailureEvent ..> Issue : F＝state＝failing／W＝close
+
+  %% --- 導出（破線） ---
+  Member ..> Persona : persona_key→段を導出
+  StageTemplate ..> Stage : 段 5 と対応（review 2 は purpose）
+  StageTemplate ..> Persona : agent＝既定ペルソナ(任意)
+  Member ..> Registry : bd actor / casbin subject を導出
+  LLMProfile ..> LimitPolicy : T を導出
+  Policy ..> CommandDef : cmd 行の名前 ⊆ コマンド定義(validate)
+  Comment ..> Registry : actor が台帳内か判定
+
+  %% --- 実体の所在 ---
+  note for Project "実体: 設定ファイル（UC-08 の CRUD 対象）。フォルダ実体は vault で人間所有"
+  note for Registry "実体: 導出（インメモリ。AI メンバは agents.yaml のキー×global、人間 actor は humans.yaml D16）"
+  note for Stage "実体: コード定数（Stage 定義＝構造属性）。min_items のみ設定で上書き可。テンプレート本文は DM-27（tasks.yaml D16）"
+  note for Persona "実体: キー・段所属＝コード定数（kernel）、本文（role/goal/backstory）＝設定ファイル global/agents.yaml（D16。旧 コード定数）"
+  note for StageTemplate "実体: 設定ファイル（領域 A の tasks.yaml 2 本。出荷時既定は settings/defaults/ D16-g。UC-07 の CRUD 対象）"
+  note for CommandDef "実体: 設定ファイル（AI が Tool で到達できない領域。設定モジュールのみ所有）"
+  note for LLMProfile "実体: 設定ファイル＋.env（api_key）"
+  note for Issue "実体: beads（bd CLI 経由のみ）。進行状態の正＝盤面（P2）"
+  note for Outcome "実体: Obsidian vault（/mnt/c 経由）"
+  note for Kickoff "実体: インメモリ。失敗は beads へ写像、停止痕跡は構造化ログ。履歴化は DM-24"
+  note for TriggerDef "実体: 設定ファイル（宣言＋起動時再登録・インメモリ jobstore。D07-a）"
+  note for RunHistory "実体: ローカル csv（追記のみ・ログ扱い。UI 表示にのみ読む。D07-b）"
+  note for WatcherState "実体: インメモリ（daemon の REST 経由でのみ読む）"

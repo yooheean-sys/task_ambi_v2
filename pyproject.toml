@@ -1,0 +1,127 @@
+[project]
+name = "task-ambi-v4"
+version = "0.1.0"
+description = "task_ambi_v4 — AI 駆動タスク処理システム（モジュラーモノリス）"
+readme = "README.md"
+requires-python = ">=3.13"
+# メンバをここに列挙する。省くと素の `uv sync` がメンバを .venv から削除し、
+# lint-imports が "Could not find package 'api'" で実行不能になる（research R-01）。
+dependencies = [
+    "common",
+    "api",
+    "ui",
+    "board",
+    "vault",
+    "settings",
+    "stages",
+    "monitor",
+    "executor",
+    "orchestrator",
+    "trigger",
+    "repo",
+    # モジュール追加時にここへ 1 行足す（登録点 1/3）
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16",
+    "pyright>=1.1.411",
+    "import-linter>=2.13",
+    "pytest>=9.1",
+    "httpx",          # テスト（TestClient）と型注釈で使う。実行時依存としては monitor が所有する（packages/features/monitor/pyproject.toml）
+    "pyyaml",         # openapi.yaml 照合テスト専用（research R-10）。実行時依存にしない
+    # NiceGUI の `user` フィクスチャ（async ジェネレータ）を動かすため（016 research R-02）。
+    # 画面のテストだけが使う。実行時依存にしない
+    "pytest-asyncio>=1.4,<2",
+]
+
+[tool.uv]
+package = false          # ルート自身は配布パッケージにしない
+
+[tool.uv.workspace]
+members = [
+    "packages/common",
+    "packages/features/*",   # glob。モジュール追加時の追記は不要
+    "apps/api",
+    "apps/ui",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+api = { workspace = true }
+ui = { workspace = true }
+board = { workspace = true }
+vault = { workspace = true }
+settings = { workspace = true }
+stages = { workspace = true }
+monitor = { workspace = true }
+executor = { workspace = true }
+orchestrator = { workspace = true }
+trigger = { workspace = true }
+repo = { workspace = true }
+# モジュール追加時にここへ 1 行足す（登録点 1/3 の続き。同じファイルなので編集ファイル数は増えない）
+
+# ゲート設定はこのファイルに一元化する（憲章 §4・FR-006）。メンバ側には置かない。
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["packages/common/src", "packages/features/*/src", "apps/api/src", "apps/ui/src"]
+# Python コードの正本でないディレクトリを外す。pocs は凍結（CLAUDE.md）。
+# specs は設計文書で、ruff format が Markdown 内のコードブロックを整形対象にするため含める。
+extend-exclude = ["pocs", "_archive", "docs", "outcome", "specs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "D"]
+# D415（1 行目を終端句読点で終える）は全角「。」を句読点と認めず、日本語 docstring が
+# 構造的に落ちるため無効化する。docstring の存在を強制する D100〜D103（憲章 §7-3 の本丸）は維持。
+ignore = ["D415"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["D"]          # テストは docstring 規約の対象外（FR-006a）
+"**/__init__.py" = ["D104"]    # パッケージ docstring は必須にしない（FR-006a）
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.13"
+include = ["packages", "apps"]
+exclude = ["**/__pycache__", ".venv", "pocs", "_archive"]
+venvPath = "."
+venv = ".venv"
+
+# `_support` の解決先。pytest の `pythonpath` は pyright に効かないので、同じ経路を別に与える。
+# apps/api/tests の中からは局所解決で当たっていたが、apps/ui/tests の同居テスト（016 FR-034・
+# ui-test-conventions §5 が `_support` の再利用を求める）からは当たらない（016 design-sync B-11）。
+# ⚠ **全体に効かせない** —— ルートに `extraPaths` を置くと `apps/api/tests/conftest.py` が
+# `conftest` という名前で全体から見えるようになり、feature 側の `from conftest import ...`
+# （`trigger/tests/integration/test_trigger_fire.py`）が別の `conftest` を掴んで赤くなる（実測）。
+# ⚠ この表は `[tool.pyright]` の**最後**に置く（後に書いたキーはこの表の中に入ってしまう）。
+[[tool.pyright.executionEnvironments]]
+root = "apps/ui/tests"
+extraPaths = ["apps/api/tests"]
+
+[tool.pytest.ini_options]
+# 画面のテスト（NiceGUI の `user` フィクスチャ）を全体の実行で使えるようにする（016 FR-031）。
+# どの conftest.py にも `pytest_plugins` を書かない（FR-036。`test_smoke_lifespan.py` が
+# この表の名前 `[tool.pytest.ini_options]` を読むので、表を `[tool.pytest]` へ移さない）。
+addopts = "-p nicegui.testing.user_plugin"
+# **必須**。省くとプラグインが既定の `main.py` を探して `FileNotFoundError` になる（016 research R-03）
+main_file = ""
+# `user` フィクスチャは async ジェネレータなので pytest-asyncio が要る（016 research R-02）
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["packages", "apps"]
+pythonpath = ["apps/api/tests"]      # _support を統合テストから import するため
+markers = [
+    "requires_bd: bd 実行ファイルが PATH 上に必要なテスト",
+]
+filterwarnings = [
+    # crewai 1.15.x が自身の deprecated フィールド（function_calling_llm・allow_code_execution・
+    # reasoning・multimodal 等）を内部参照するたびに pydantic 2.12 が出す警告（538 件中のほぼ全部）。
+    # 自コードは当該キーを一切渡していない（executor が crewai を所有）。ピン内最新 1.15.22 でも未修正。
+    "ignore::DeprecationWarning:crewai",
+    # starlette 1.6 の testclient が httpx2 未導入のフォールバックで import 時に出す警告（1 件）。
+    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+]

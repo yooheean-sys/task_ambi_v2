@@ -1,0 +1,332 @@
+%% settings（BC-01 設定）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p2_domain_model.mmd DM-01〜07/09/11/12/26/27／p4_module_contract.csv IF-23〜30・IF-50／p4 notes §2（受け渡し型 settings.py 7 件＋ProviderKind・HookRef・McpSpec＋P5-R1 で TaskTemplates・TaskTemplate）／D06-a〜e,g／D07-e,f／D15-j／D16（P5-R1: agents.yaml／tasks.yaml 化）／PoC casbin fleet.yaml・manifest.py・policy/（読取のみ）
+%% 記法: classDiagram。namespace common_interfaces_settings_py＝受け渡し型／settings_internal＝MOD 内部（スナップショット・台帳・検証）／area_a_entities＝設定ファイル領域 A の実体（<SETTINGS_ROOT> 配下。P5D-012 相当の外部実体表現）
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+%% 裁定: P5D-013〜017／P5D-046（P5-R1 D16。P5D-015/017 の改訂後）— p5_decision_log.csv
+classDiagram
+  direction LR
+
+  namespace common_interfaces_settings_py {
+    class Project["Project（DM-01）"] {
+      <<受け渡し型>>
+      +project_key casbin キー規則・_program は予約
+      +name
+      +folders ProjectFolders
+      +is_reserved bool
+      +repos ProjectRepos | None 任意（未登録は None。CFG-74）
+    }
+    class ProjectFolders["ProjectFolders（DM-02）"] {
+      <<受け渡し型>>
+      +pj_input_dir vault ルート相対（P5D-009）
+      +role_dirs dict~PersonaKey,str~ メンバを作るペルソナ全員分が必須（P5D-018）
+      +outcome_dir vault ルート相対（PJ 直下 outcome/）
+    }
+    class ProjectRepos["ProjectRepos（CFG-74 の実装化。R-13-c）"] {
+      <<受け渡し型>>
+      +remote_url 任意（リモートリポジトリの URL）
+      +local_path 任意（OS 絶対パス。保管庫の外の実リポジトリ）
+    }
+    class Member["Member（DM-03＋DM-07 導出。agents.yaml ④→⑤ merge 済み D16-d/h）"] {
+      <<受け渡し型>>
+      +member_id project_key.persona_key
+      +project_key / persona_key
+      +role CrewAI Agent.role（旧 display_name を統合）
+      +goal / backstory agents.yaml（旧 roles/<persona>.md を吸収）
+      +llm_profile LLMProfile 解決済み（PJ→global→default D16-h）
+      +tools list~ToolName~ 装備（許可 policy.csv とは別層）
+      +skills list~str~
+      +mcps list~McpSpec~
+      +max_iter / max_rpm / max_execution_time 任意（未指定は executor config 既定）
+      +bd_actor 導出（台帳）
+      +casbin_subject member:<member_id> 導出
+    }
+    class LLMProfile["LLMProfile（DM-11）"] {
+      <<受け渡し型>>
+      +name
+      +provider_kind ProviderKind（P5D-013）
+      +base_url
+      +model_id
+      +context_window
+      +api_key_ref .env のキー名（実値は executor が読む）
+      +extra_headers dict 任意
+      +threshold_t 導出＝context_window − context_reserve_tokens（綴りは現物の契約が正）
+    }
+    class ProviderKind["ProviderKind"] {
+      <<enumeration>>
+      openai_compatible
+      openrouter
+    }
+    class LimitPolicy["LimitPolicy（DM-12 解決済み）"] {
+      <<受け渡し型>>
+      +scope global | project_key
+      +max_requests_per_kickoff
+      +max_cost_per_kickoff
+    }
+    class Rules["Rules（DM-05。D16-h で project_rules のみに縮小）"] {
+      <<受け渡し型>>
+      +project_rules str（projects/<key>/rules.md）
+    }
+    class TaskTemplates["TaskTemplates（DM-27。IF-50 の戻り D16-h）"] {
+      <<受け渡し型>>
+      +generation スナップショット世代
+      +templates dict~str,TaskTemplate~ 7 キー（global→PJ 上書き適用済み）
+    }
+    class TaskTemplate["TaskTemplate（DM-27 の 1 段）"] {
+      <<受け渡し型>>
+      +description ｛変数｝込みの本文（必須）
+      +expected_output 必須
+      +agent PersonaKey | None 段の既定ペルソナ（任意 D16-f）
+      +tools list~ToolName~ | None Task.tools（あれば Agent.tools を上書き D16-a。受け渡し型としては既定値を持たず構築時に必ず渡す）
+    }
+    class HooksConfig["HooksConfig（DM-06）"] {
+      <<受け渡し型>>
+      +hooks list~HookRef~
+    }
+    class HookRef["HookRef"] {
+      <<受け渡し型>>
+      +name 登録名（executor が crewai.hooks に写す）
+      +points PRE_TOOL_CALL | POST_TOOL_CALL
+      +agents list~str~ 絞り込み（任意）
+    }
+    class McpSpec["McpSpec（Agent.mcps ▲）"] {
+      <<受け渡し型>>
+      +name / transport / command / args
+    }
+    class ProjectNotFound["ProjectNotFound"] {
+      <<exception>>
+      +NotFoundError を継承
+    }
+    class MemberNotFound["MemberNotFound"] {
+      <<exception>>
+      +NotFoundError を継承
+    }
+    class UnknownCommand["UnknownCommand"] {
+      <<exception>>
+      +NotFoundError を継承
+    }
+  }
+
+  namespace settings_internal {
+    class SettingsDeps["SettingsDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +board_reader BoardReader（削除ガード IF-09。F11-c だけが呼ぶ）
+      +vault_reader VaultReader（存在確認 IF-32。F11-a／F11-b だけが呼ぶ）
+    }
+    class SettingsHandle["SettingsHandle（build の戻り）"] {
+      <<frozen dataclass>>
+      +settings_reader / member_resolver / authorizer / command_registry
+      +router APIRouter（17 パス・38 操作。既定値を持たない＝必ず口を持つ）
+    }
+    class SettingsEnv["SettingsEnv（.env）"] {
+      <<Settings>>
+      +SETTINGS_ROOT 領域 A の絶対パス
+    }
+    class SettingsConfig["SettingsConfig（settings/config.json）"] {
+      <<Settings>>
+      +key_forbidden_chars 既定 . / \ : 空白
+      +context_reserve_tokens 既定（T 導出の余裕）
+      +llm_presets UI 用（OpenRouter／ローカルの base_url 雛形）
+      +limits_defaults 出荷時既定（limits.yaml 不在時）
+      +system_actor orchestrator/config.json と同名・同値（P5D-037。台帳が「システム」として知る。付3 で明示）
+    }
+    class EffectClass["EffectClass（反映区分）"] {
+      <<StrEnum>>
+      +immediate 権限ポリシーとコマンド定義（P5D-016）
+      +next_kickoff その他（応答ヘッダでは next-kickoff＝ハイフン。写像は router/__init__.py の 1 箇所）
+    }
+    class FileWrite["FileWrite（1 ファイル分の書込）"] {
+      <<frozen dataclass>>
+      +rel 領域 A ルート相対のパス
+      +text 直列化済みの本文（直列化は呼び手が済ませる）
+    }
+    class ChangeSet["ChangeSet（1 回の保存が触るファイルの全体）"] {
+      <<frozen dataclass>>
+      +writes tuple~FileWrite~ 変更のあったファイルだけ
+      +removals tuple~str~ PJ の tasks.yaml の解除
+      +archive str|None PJ 解除（archive のとき writes は global/limits.yaml の 1 件に限る）
+      +new_project str|None PJ 登録（段 3-0 で projects/&lt;key&gt;/ を作る）
+    }
+    class SaveOutcome["SaveOutcome（保存経路の戻り）"] {
+      <<frozen dataclass>>
+      +generation 差し替え後の世代（保存経路が「現在 + 1」を決める）
+      +effect EffectClass（router が応答ヘッダへ写す）
+    }
+    class SettingsSnapshot["SettingsSnapshot（不変・世代付き）"] {
+      <<VO>>
+      +generation
+      +projects dict~key,Project~
+      +agents_global dict~persona,AgentSpecRecord~ global/agents.yaml
+      +agents dict~key,dict~persona,AgentSpecRecord~~ projects/*/agents.yaml（キーの存在＝メンバ）
+      +members dict~key,dict~persona,Member~~ merge・LLM 解決・台帳導出まで済んだ受け渡し型
+      +tasks_global / tasks dict tasks.yaml（global・PJ 上書き）
+      +registry Registry
+      +llm_profiles / default_profile
+      +limits global＋PJ 上書き
+      +commands dict~name,CommandDef~
+      +hooks / rules 本文（project_rules のみ）
+      +enforcers dict~key,Enforcer~
+    }
+    class Registry["Registry（DM-07 台帳・導出）"] {
+      <<VO>>
+      +bd_actors dict~bd_actor,member_id~ 導出（member_id をそのまま D21-a）
+      +subjects dict~casbin_subject,project_key~ enforce の PJ 引き当てはここだけを使う（文字列解析をしない）
+      +human_actors set global/humans.yaml から（P5D-019）
+      +system_actors set settings/config.json の system_actor（P5D-037。is_human は False・印なし）
+      +is_known(actor)
+    }
+    class CommandDef["CommandDef（DM-26）"] {
+      <<VO>>
+      +name cmd:<name> の名前側
+      +argv list~str~ 固定・shell=False
+    }
+    class PolicySet["PolicySet（DM-04）"] {
+      <<VO>>
+      +project_key
+      +rows p/g 行（主体 member:<id>）
+      +model global/model.conf 共通
+    }
+    class ValidationProblem["ValidationProblem"] {
+      <<VO>>
+      +where ファイル・キー
+      +kind forward | orphan | cmd_ref | key_rule | folder_missing | unresolvable | unknown_field | forbidden_key | agent_ref | llm_ref | tool_ref | var_unknown | var_required（D16）
+      +reason
+    }
+    class SettingsValidationError["SettingsValidationError（内部・HTTP 422）"] {
+      <<exception>>
+      +problems list~ValidationProblem~
+    }
+  }
+
+  namespace area_a_entities {
+    class ProjectYaml["projects/<key>/project.yaml"] {
+      <<外部実体>>
+      +project_key / name / is_reserved
+      +folders（vault ルート相対）
+    }
+    class AgentsGlobalYaml["global/agents.yaml（CFG-69）"] {
+      <<外部実体>>
+      +PersonaKey → role / goal / backstory（必須）
+      +llm / tools / skills / mcps / max_iter / max_rpm / max_execution_time（任意）
+    }
+    class AgentsYaml["projects/<key>/agents.yaml（CFG-70。旧 members.yaml を置換）"] {
+      <<外部実体>>
+      +PersonaKey → 同フィールド全て任意（キーの存在＝メンバ。空 dict 可）
+      +リスト型（tools/skills/mcps）は丸ごと置換・他はフィールド単位 merge（D16-d）
+    }
+    class TasksGlobalYaml["global/tasks.yaml（CFG-71）"] {
+      <<外部実体>>
+      +7 キー: program/project/subrequest/child/plain/review_normal/review_final（D16-a）
+      +各キー: description（必須）/ expected_output（必須）/ agent（任意）/ tools（任意）
+    }
+    class TasksYaml["projects/<key>/tasks.yaml（CFG-72。任意）"] {
+      <<外部実体>>
+      +キー単位の丸ごと上書き
+    }
+    class PolicyCsv["projects/<key>/policy.csv（casbin 公約形式）"] {
+      <<外部実体>>
+      +p, member:<id>, obj, act
+      +g, member:<id>, role_*
+    }
+    class RulesMd["projects/<key>/rules.md"] {
+      <<外部実体>>
+      +PJ 共通ルール本文
+    }
+    class HooksYaml["projects/<key>/hooks.yaml"] {
+      <<外部実体>>
+      +hooks[]: name / points / agents
+    }
+    class ModelConf["global/model.conf（casbin 公約形式）"] {
+      <<外部実体>>
+      +r/p/g/e/m（PoC model.conf と同形）
+    }
+    class LlmProfilesYaml["global/llm_profiles.yaml"] {
+      <<外部実体>>
+      +profiles[] / default
+    }
+    class LimitsYaml["global/limits.yaml"] {
+      <<外部実体>>
+      +global / overrides（project_key ごと）
+    }
+    class CommandsYaml["global/commands.yaml"] {
+      <<外部実体>>
+      +name → argv[]
+    }
+    class HumansYaml["global/humans.yaml"] {
+      <<外部実体>>
+      +human_actors[] 人間の bd actor 名（単一利用者）
+    }
+  }
+
+  Project "1" *-- "1" ProjectFolders
+  Project "1" *-- "0..1" ProjectRepos
+  Member --> LLMProfile : 解決済み
+  Member "1" *-- "0..*" McpSpec
+  LLMProfile --> ProviderKind
+  HooksConfig "1" *-- "0..*" HookRef
+  SettingsSnapshot *-- Registry
+  SettingsSnapshot "1" *-- "0..*" CommandDef
+  SettingsSnapshot "1" *-- "0..*" PolicySet
+  SettingsValidationError "1" *-- "1..*" ValidationProblem
+  SettingsHandle ..> SettingsDeps : build
+  SettingsHandle ..> SettingsEnv : build が読む
+  SettingsHandle ..> SettingsConfig : build が読む
+  Project ..> ProjectYaml : 写像
+  Member ..> AgentsGlobalYaml : merge ④
+  Member ..> AgentsYaml : merge ⑤＋台帳導出
+  TaskTemplates "1" *-- "7" TaskTemplate
+  TaskTemplates ..> TasksGlobalYaml : 写像 ④
+  TaskTemplates ..> TasksYaml : 上書き ⑤
+  PolicySet ..> PolicyCsv : 写像
+  PolicySet ..> ModelConf : 共通
+  Rules ..> RulesMd : 本文
+  HooksConfig ..> HooksYaml : 写像
+  LLMProfile ..> LlmProfilesYaml : 写像
+  LimitPolicy ..> LimitsYaml : 解決
+  CommandDef ..> CommandsYaml : 写像
+  PolicySet ..> CommandDef : cmd 行 ⊆ 定義（validate）
+  Registry ..> AgentsYaml : AI メンバの導出元（P5D-019 改 D16）
+  Registry ..> HumansYaml : 人間 actor の宣言
+
+  note for Project "永続化先: なし（インメモリの写像。実体は領域 A の project.yaml）"
+  note for ProjectFolders "永続化先: なし（インメモリ。パスは vault ルート相対 P5D-009。_program も持つ P5D-014）"
+  note for ProjectRepos "永続化先: なし（インメモリの写像。実体は領域 A の project.yaml の repos セクション＝ CFG-74。git 操作の手段は持たずプロンプトへの通知のみ）"
+  note for Member "永続化先: なし（インメモリ。実体は agents.yaml 2 本の merge。bd_actor・casbin_subject は台帳から導出し保存しない P4）"
+  note for LLMProfile "永続化先: なし（インメモリの写像。実体は llm_profiles.yaml、api_key の実値は .env）"
+  note for ProviderKind "永続化先: なし（コード定数）"
+  note for LimitPolicy "永続化先: なし（インメモリ。global＋PJ 上書きの解決結果）"
+  note for Rules "永続化先: なし（インメモリ。本文の実体は projects/<key>/rules.md のみ。役割ルールは agents.yaml backstory に吸収 D16-h）"
+  note for TaskTemplates "永続化先: なし（インメモリの写像。実体は tasks.yaml 2 本。kickoff 開始時に読み実行中不変 P5D-016）"
+  note for TaskTemplate "永続化先: なし（インメモリ）"
+  note for HooksConfig "永続化先: なし（インメモリ）"
+  note for HookRef "永続化先: なし（インメモリ）"
+  note for McpSpec "永続化先: なし（インメモリ。接続は executor。PoC は宣言・検証のみ ▲）"
+  note for ProjectNotFound "永続化先: なし（インメモリ）"
+  note for MemberNotFound "永続化先: なし（インメモリ）"
+  note for UnknownCommand "永続化先: なし（インメモリ）"
+  note for SettingsDeps "永続化先: なし（インメモリ）"
+  note for SettingsHandle "永続化先: なし（インメモリ）"
+  note for SettingsEnv "永続化先: ファイル（リポジトリ直下 .env。環境依存値）"
+  note for SettingsConfig "永続化先: ファイル（settings/config.json。開発者が commit）"
+  note for EffectClass "永続化先: なし（インメモリ。応答ヘッダ X-Settings-Effect の値になる）"
+  note for FileWrite "永続化先: なし（インメモリ。書くのは AreaAWriter）"
+  note for ChangeSet "永続化先: なし（インメモリ。1 回の保存が触るファイルの全体）"
+  note for SaveOutcome "永続化先: なし（インメモリ。応答ヘッダに写して返す）"
+  note for SettingsSnapshot "永続化先: なし（インメモリ。保存ごとに丸ごと差替え P5D-016）"
+  note for Registry "永続化先: なし（インメモリ。保存時に再導出 D06-c）"
+  note for CommandDef "永続化先: なし（インメモリの写像。実体は commands.yaml＝AI 到達不能領域）"
+  note for PolicySet "永続化先: なし（インメモリ。実体は policy.csv）"
+  note for ValidationProblem "永続化先: なし（インメモリ。UI に返す）"
+  note for SettingsValidationError "永続化先: なし（インメモリ）"
+  note for ProjectYaml "永続化先: ファイル（領域 A <SETTINGS_ROOT>/projects/<key>/。UI で CRUD・commit しない）"
+  note for AgentsGlobalYaml "永続化先: ファイル(領域 A global/。出荷時既定は settings/defaults/agents.yaml から初回コピー D16-g)"
+  note for AgentsYaml "永続化先: ファイル(領域 A。UC-08 登録時に空で生成 D16-h)"
+  note for TasksGlobalYaml "永続化先: ファイル(領域 A global/。出荷時既定は settings/defaults/tasks.yaml から初回コピー D16-g)"
+  note for TasksYaml "永続化先: ファイル(領域 A。任意・登録時に生成しない D16-h)"
+  note for PolicyCsv "永続化先: ファイル（領域 A。casbin の公約形式）"
+  note for RulesMd "永続化先: ファイル（領域 A）"
+  note for HooksYaml "永続化先: ファイル（領域 A）"
+  note for ModelConf "永続化先: ファイル（領域 A global/。初期内容は settings が出荷時雛形から生成）"
+  note for LlmProfilesYaml "永続化先: ファイル（領域 A global/）"
+  note for LimitsYaml "永続化先: ファイル（領域 A global/）"
+  note for CommandsYaml "永続化先: ファイル（領域 A global/。DM-26 の置き場 P5D-015）"
+  note for HumansYaml "永続化先: ファイル（領域 A global/。is_human の判定材料 P5D-019。AI メンバは導出・人間は宣言）"

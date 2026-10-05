@@ -1,0 +1,81 @@
+%% プロセス構成・配置図 — task_ambi_v4（第6フェーズ。コンテナ図 Level 2 の代替）
+%% 裁定: 設計判断_V4-D12（D12-f: 範囲＝WSL2 の systemd 2 ユニット＋ローカル FS＋/mnt/c＋外部サービス＋Windows 側の相手）
+%% 出典: 憲章 2.0.0 §4 プロセス構成（常駐する systemd ユニットは app の 1 つだけ。各 MOD の NiceGUI ページは app の FastAPI プロセスに載せて /ui で配信する）／01_context.mmd の Boundary（WSL2／Windows 側／外部サービス）／p4 図（MOD 構成）／p6_external_interface.csv（EIF-01〜13）
+%% 改訂: 016（D23-g）— D12-f の systemd ユニット ui を廃止し、apps/ui＋settings.ui／trigger.ui を app ユニットの中へ移した。EIF-10 は app の中の辺になる（同一プロセスでもクライアント-サーバ境界＝憲章 2.0.0 §4・J-5）。UI_PORT は廃止（D23-e）
+%% 凡例: 実線＝EIF-nn（app プロセスの外部境界。ラベルの EIF 番号で csv を引く）／破線＝人間・外部ツール同士の動線（システムの境界ではない。説明用）
+%% 規約: 辺は MOD→外部のみ（.env／config.json と stdout は代表ノード apps/api・common を端点にする。subgraph を端点にすると内部 direction が無視されるため）（MOD→MOD は p4 図の正。本図に描かない）。ポート・パスの実値は書かず記号（APP_PORT／VAULT_ROOT 等。実値は付3）。systemd の設定（Restart= 等）は環境情報ファイル（憲章 §4）
+%% 記法: flowchart LR（TB だと nested subgraph の direction が外向き辺で無視され横一列に潰れる。LR では MOD 列→ストア列→外部サービスが左→右、Windows 側が下段に並び読める。mmdc で実測）
+%% 短文のみ。説明の正本は p6_external_interface_notes.md §5
+flowchart LR
+
+  subgraph WIN["Windows 11 側"]
+    direction TB
+    BROWSER(["👤 自分: ブラウザ／curl"])
+    OBS(["Obsidian アプリ"])
+    PWSH(["PowerShell FileSystemWatcher<br/>（退避経路。PollingObserver 不合格時のみ）"])
+    subgraph MNTC["Windows ファイルシステム（WSL から /mnt/c・drvfs で見える）"]
+      direction LR
+      VAULT[("Obsidian vault<br/>VAULT_ROOT: PJ 入力・役割フォルダ・outcome/")]
+      DL[("DL フォルダ<br/>DOWNLOADS_DIR＋watch_dir（監視のみ）")]
+    end
+  end
+
+  subgraph WSL["WSL2（Ubuntu 24.04）— 開発・実行はここで完結"]
+    direction TB
+
+    subgraph APP["systemd ユニット app（常駐はこの 1 つだけ）— uvicorn・FastAPI 1 プロセス（APP_PORT）。業務ロジックはここだけ"]
+      direction LR
+      UI["apps/ui（業務ロジックなし・薄い器）<br/>統合した起動点 main.py: create_app に NiceGUI を /ui で載せる<br/>shell.py（殻）・pages.py（登録点）が settings.ui／trigger.ui を束ねる"]
+      API["apps/api 実行エントリ: main.py（uvicorn.run のみ）<br/>composition root: app.py／wiring.py／registry.py（build(deps) 依存順・router include・lifespan 束ね）<br/>GET /health（liveness のみ）"]
+      COMMON["packages/common<br/>kernel（列挙・log 基盤・例外基底）＋interfaces（14 Protocol・受け渡し型）"]
+      subgraph FEAT["packages/features（8 MOD。feature 間 import 禁止）"]
+        direction TB
+        BOARD["board<br/>beads アダプタ"]
+        VAULTM["vault<br/>vault アダプタ・P1 ゲート"]
+        SETTINGS["settings<br/>領域 A・4 Protocol・router"]
+        MONITOR["monitor<br/>LLMHttpHook・RunMonitor"]
+        STAGES["stages<br/>段・ペルソナ（純粋）"]
+        EXECUTOR["executor<br/>crewai・LLM 構築・Tools"]
+        ORCH["orchestrator<br/>外側ループ・single-flight<br/>router /kickoffs"]
+        TRIGGER["trigger<br/>APScheduler・watchdog スレッド<br/>router /triggers /history /watcher /hooks/file"]
+      end
+    end
+
+    subgraph FS["ローカル FS（ext4）"]
+      direction LR
+      REPO[("リポジトリ直下<br/>.env（秘密・環境依存値）<br/>config.json 群（ルート＋各 MOD）")]
+      AREAA[("SETTINGS_ROOT<br/>設定ファイル領域 A<br/>projects/・global/（agents.yaml・tasks.yaml 含む D16）")]
+      AREAB[("TRIGGER_ROOT<br/>領域 B triggers.yaml<br/>history/*.csv")]
+      BEADS[(".beads（beads・Dolt）<br/>BEADS_DIR。bd CLI 経由のみ")]
+    end
+
+    BDUI(["beads-ui<br/>（人間向け画面）"])
+    JOURNAL[("journald<br/>journalctl -u app")]
+  end
+
+  subgraph EXTSVC["外部サービス／ローカルサーバ"]
+    LLM{{"LLM API（OpenAI 互換 HTTP）<br/>OpenRouter（HTTPS）／ローカル llama.cpp（localhost）<br/>プロファイル DM-11 で切替"}}
+  end
+
+  %% ---- app プロセスの外部境界（EIF） ----
+  BOARD -->|"EIF-01 bd CLI subprocess（Y）"| BEADS
+  VAULTM -->|"EIF-02 ファイル I/O<br/>（VAULT_ROOT 相対・外縁検査）"| VAULT
+  EXECUTOR -->|"EIF-03 HTTP(S) OpenAI 互換（Y）<br/>monitor の LLMHttpHook が同一接続を観測"| LLM
+  TRIGGER -->|"EIF-04 watchdog PollingObserver（読取のみ）"| DL
+  SETTINGS -->|"EIF-05 YAML／csv／md I/O"| AREAA
+  TRIGGER -->|"EIF-06 triggers.yaml／EIF-07 履歴 csv"| AREAB
+  REPO -->|"EIF-08 .env／EIF-09 config.json<br/>起動時に各 MOD の build 内で読む"| API
+  UI -->|"EIF-10 HTTP（app プロセス内の UI ページ → 自プロセスの口）<br/>/settings/*・/triggers・/history・/watcher"| API
+  BROWSER -->|"EIF-11 HTTP<br/>POST /kickoffs・GET /kickoffs/*・GET /health"| API
+  PWSH -->|"EIF-12 HTTP POST /hooks/file"| API
+  COMMON -->|"EIF-13 stdout 構造化ログ<br/>（kernel LoggerFactory・全 MOD）"| JOURNAL
+
+  %% ---- 人間・外部ツール同士の動線（説明用） ----
+  BROWSER -.->|"UI 画面（NiceGUI。app の APP_PORT の /ui）"| UI
+  BROWSER -.->|"盤面閲覧・エスカレーション回答"| BDUI
+  BDUI -.-> BEADS
+  OBS -.->|"メモ執筆・成果物閲覧"| VAULT
+  PWSH -.->|"投下を検知"| DL
+
+  classDef unit stroke-width:2px
+  class APP unit

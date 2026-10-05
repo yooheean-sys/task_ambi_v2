@@ -1,0 +1,42 @@
+%% アクティビティ図 (1/4): 起票 → 階層分解 → 遂行 → 承認 — UC-I1（UC-01/02/11 から include）
+%% 出典: 04_usecase_desc.csv UC-I1 / 3-1 候補 / PoC 設計仕様 / loop.py _handle_issue・_flush_proposals（PoC 基準版）
+%% 凡例: 角丸=開始終了 / 四角=処理 / 菱形=分岐 / 二重枠=他 UC への委譲
+flowchart TD
+  S([外側ループが bd ready --claim で issue を取得]) --> ST[段を解決 resolve_stage<br/>kind: ラベル × 親の有無]
+  ST --> PH{段の相}
+
+  %% ---- propose 相（統括 / プロジェクト / WS）----
+  PH -- propose<br/>統括・プロジェクト・WS --> P1[Obsidian コンテキスト読取<br/>PJ フォルダ・役割フォルダ]
+  P1 --> P2[CrewAI kickoff: 分解提案<br/>担当一覧は allowed_personas から動的生成（tasks.yaml の ｛persona_guide｝ 必須変数 D16-c）]
+  P2 --> P3{機械検証<br/>allowed_personas / allow_depends_on /<br/>coverage 連鎖 / MIN_ITEMS}
+  P3 -- 不合格 --> RB[差し戻し: release して次周回で再提案]
+  P3 -- 合格 --> P4[子 issue を起票 → 兄弟依存 B1 →<br/>dependents への付け替え]
+  P4 --> P5{起票・依存張りの<br/>途中で失敗?}
+  P5 -- はい --> UNSAFE[UNSAFE: 自動再試行しない<br/>done 一覧を付けて人間へ]
+  P5 -- いいえ --> CL[親 issue を close]
+
+  %% ---- execute 相（リーフ）----
+  PH -- execute<br/>リーフ --> E1[Obsidian コンテキスト読取<br/>＋ B2 兄弟成果物の追加開放]
+  E1 --> E2[CrewAI kickoff: 実行]
+  E2 --> E3[成果物を outcome/ に書込<br/>outcome/ 外への書込は構造的に不可]
+  E3 --> E4{完了ゲート<br/>allowed_personas 照合 / depends_on 指摘}
+  E4 -- 不合格 --> RB
+  E4 -- 合格 --> E5{レビュー}
+  E5 -- 却下 --> RB
+  E5 -- レビュー不能 --> ESC
+  E5 -- 承認 --> CL
+
+  %% ---- kickoff 中の横断分岐 ----
+  P2 -. 行き詰まり .-> ESC[[UC-04 エスカレーション<br/>kind:question 起票 → blocks 依存 → claim 解放 → 人間待ち]]
+  E2 -. 行き詰まり .-> ESC
+  P2 -. 上限到達 .-> LIM[[UC-12 暴走停止 → UC-13 失敗記録]]
+  E2 -. 上限到達 .-> LIM
+
+  CL --> NEXT([次の ready へ<br/>統括まで close されれば全完了])
+  RB --> NEXT
+  UNSAFE --> ESC
+  ESC --> WAIT([人間の回答待ち<br/>再開は ready 巡回で拾う D04])
+  LIM --> WAIT
+
+  classDef ext fill:#fff8e1,stroke:#b58900;
+  class ESC,LIM ext;

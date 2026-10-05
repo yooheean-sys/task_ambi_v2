@@ -1,0 +1,67 @@
+%% ユースケース図 — task_ambi_v4
+%% 裁定: 設計判断_V4-D02（Q3 アクター / Q4 UC 列挙 / Q7 記法）
+%% - mermaid にユースケース図の専用構文が無いため flowchart で表現する
+%% - 主アクターは「自分」1名。副アクターは「タイマ」「ファイル投下」（無人起動）。AI 役割はシステム内部でありアクターにしない
+%% - 据え置き（§6-2）は点線＋【据え置き】。スコープ外（§6-3）は描かない
+%% - UC の正は 04_usecase_desc.csv（uc_id が本図と 1:1 対応）
+flowchart LR
+  me(["👤 自分<br/>（単一利用者）"])
+  timer(["⏱ タイマ<br/>（cron / interval）"])
+  filedrop(["📄 ファイル投下<br/>（Windows DL フォルダ）"])
+
+  subgraph sys["task_ambi_v4"]
+    direction TB
+    subgraph g_task["タスク運用"]
+      UC01(["UC-01 統括タスクを起票する"])
+      UC02(["UC-02 プロジェクト／WS へ直接起票する"])
+      UC03(["UC-03 進行中タスクへ追加指示する"])
+      UC04(["UC-04 エスカレーション質問に回答する"])
+      UC05(["UC-05 成果物を Obsidian で閲覧する"])
+      UC06(["UC-06 タスクを取り下げる<br/>【据え置き】"])
+    end
+    subgraph g_cfg["設定管理"]
+      UC07(["UC-07 AI 設定を CRUD する"])
+      UC08(["UC-08 プロジェクトを CRUD する<br/>（フォルダ対応付け）"])
+    end
+    subgraph g_trig["トリガー"]
+      UC09(["UC-09 トリガーを CRUD・有効化・手動実行する"])
+      UC10(["UC-10 トリガー履歴・watcher 生死を確認する"])
+      UC11(["UC-11 無人でタスク遂行を起動する"])
+    end
+    subgraph g_ctl["監視・制御"]
+      UC12(["UC-12 暴走を止める"])
+      UC13(["UC-13 失敗を beads で検出する"])
+    end
+    UCI1(["UC-I1 階層分解して遂行する<br/>（include）"])
+  end
+
+  me --> UC01
+  me --> UC02
+  me --> UC03
+  me --> UC04
+  me --> UC05
+  me -.-> UC06
+  me --> UC07
+  me --> UC08
+  me --> UC09
+  me --> UC10
+  me --> UC12
+  me --> UC13
+  timer --> UC11
+  filedrop --> UC11
+
+  UC01 -. include .-> UCI1
+  UC02 -. include .-> UCI1
+  UC11 -. include .-> UCI1
+  UCI1 -. extend: 行き詰まり .-> UC04
+  UCI1 -. extend: 上限到達 .-> UC12
+  UC12 -. include .-> UC13
+  UC11 -. 冪等ガード D01 .-> UC04
+  UC04 -. 回答後の再開は ready 巡回 D04 .-> UC11
+
+  classDef actor fill:#e8f0fe,stroke:#1a56db,stroke-width:2px;
+  classDef deferred stroke-dasharray: 5 5,fill:#f5f5f5,color:#666;
+  classDef internal fill:#fff8e1,stroke:#b58900;
+  class me,timer,filedrop actor;
+  class UC06 deferred;
+  class UCI1 internal;

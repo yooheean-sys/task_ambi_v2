@@ -1,0 +1,9 @@
+{
+  "ready_interval_default_sec": 300,
+  "min_interval_sec": 60,
+  "misfire_grace_sec": 30,
+  "poll_interval_sec": 5.0,
+  "stable_seconds": 2,
+  "watcher_enabled": true,
+  "timezone": null
+}

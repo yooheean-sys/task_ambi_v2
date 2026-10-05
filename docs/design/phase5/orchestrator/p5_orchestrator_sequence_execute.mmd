@@ -1,0 +1,46 @@
+%% orchestrator 内部シーケンス 副図 — execute 段（child リーフ）: 完了ゲート → レビュー run → close／差し戻し／エスカレーション（UC-04）— task_ambi_v4 第5フェーズ
+%% 出典: p2_sequence_UC-I1.mmd 55-73・p2_sequence_UC-04.mmd／D04-c／D06-c／D08-e／FN-07/08/09/10/50/51／PoC loop.py（_open_escalation・_open_question_of）
+sequenceDiagram
+  autonumber
+  participant Svc as orchestrator/service.py
+  participant St as StageCatalog／ProposalGate
+  participant V as VaultReader
+  participant X as CrewExecutor
+  participant S as SettingsReader／MemberResolver
+  participant B as BoardReader／BoardWriter
+
+  Note over Svc,B: 前提: 作業 run（purpose=work）の CrewOutcome を受け取った直後
+  alt outcome.escalation あり（AI が判断を仰ぐ）
+    Svc->>B: open_question_of(issue_id)
+    alt 未回答の質問が既にある
+      Svc->>Svc: 再利用（起票しない FN-08）
+    else
+      Svc->>B: create(IssueSpec(title="[要判断] …", description=試したこと/詰まった理由/決めてほしいこと, labels=[kind:question, project:<key>], parent=None), actor) → q_id
+      Svc->>B: add_dependency(issue_id, blocked_by=q_id)（元 issue は blocks で待機。**--parent（親子の指定）を使わない**＝ P5D-059 (2)。親子で張ると open_question_of が拾えなくなる）
+    end
+    Svc->>B: release(issue_id)（claim 解放。再開は人間が質問を close → ready 巡回 D04-c）
+  else outcome.completed
+    Svc->>St: extract_outcome_tokens(issue.acceptance) → tokens
+    loop token ごと
+      Svc->>Svc: token → filename（**接頭辞 outcome/ を剥がした残り**。orchestrator が持つ正準形の知識はこの定数 1 つだけ FR-051・FR-061）
+      Svc->>V: outcome_exists(folders, filename)（完了ゲート FN-51。**接頭辞で始まらないトークンは呼ばずに不合格** SC-023a）
+    end
+    alt 欠け／不正トークンあり
+      Svc->>B: comment(issue_id, "[orchestrator] 差し戻し: 不在の成果物 …")
+      Svc->>St: build_prompt(spec, member, rules, templates, ctx, feedback=不在一覧) → X.run（同 kickoff 内。上限 max_returns）（D16-h）
+    else 全て実在
+      Svc->>S: resolve(project_key, planner) → レビュー担当 Member
+      Svc->>St: build_prompt(spec, planner Member, rules, templates（review_normal／review_final D16-a）, ContextRefs(purpose=review, is_final_review=親 acceptance あり), feedback=None)
+      Svc->>X: run(CrewSpec(purpose=review, mode=execute, …))
+      X-->>Svc: CrewOutcome.review（approved・feedback・files_read）
+      alt approved
+        Svc->>Svc: CloseIntent(reason=feedback 要約, actor=member.bd_actor) を返す（**close は主図の finish の後に 1 回**＝ C-1。show で確認）
+      else 却下
+        Svc->>B: comment(issue_id, "[orchestrator] 差し戻し: review feedback")
+        Svc->>Svc: 作業 run を再実行（feedback 付き。上限 max_returns。超過は人間へ渡す統一経路）
+      end
+    end
+  else 完了申告なし（outcome.halted／task_output のみ）
+    Svc->>Svc: finish に委ねる（F なら monitor が failing、W なら close 済み）。申告も失敗もなければ差し戻し 1 回 → 上限で人間へ
+  end
+  Note over Svc,B: 人間の指示・回答の収集（前処理で）: comments(issue_id) の各 actor を is_human で判定し人間の本文を human_guidance に。質問 issue が close されていれば comments(q_id) の人間コメントを回答として human_guidance に載せる（FN-07/09/10）。台帳外 actor は settings が印を残す

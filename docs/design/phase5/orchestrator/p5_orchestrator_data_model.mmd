@@ -1,0 +1,150 @@
+%% orchestrator（BC-03 分解・遂行 — 外側ループ）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p2_domain_model.mmd DM-18/19／p4_module_contract.csv IF-49／p4 notes §2（受け渡し型 orchestrator.py: ExecutionContext・KickoffResult ＋本フェーズで KickoffStatus・IssueRunSummary・KickoffBusy・LaunchKind を追記）／D08-d・D09-e／P5D-034〜038
+%% 記法: classDiagram。namespace common_interfaces_orchestrator_py＝受け渡し型／orchestrator_internal＝MOD 内部。外部実体なし（盤面・vault・設定は全て Protocol 経由。所有ストアなし DIFF-18）
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+classDiagram
+  direction LR
+
+  namespace common_interfaces_orchestrator_py {
+    class LaunchKind["LaunchKind（起動種別）"] {
+      <<enumeration>>
+      human
+      timer
+      file
+      manual
+    }
+    class ExecutionContext["ExecutionContext（DM-19）"] {
+      <<受け渡し型>>
+      +kind LaunchKind
+      +trigger_snapshot TriggerSnapshot | None（名・種別・id）
+      +dropped_path str | None（file 時）
+      +claim_filter ClaimFilter（DM-23 の写像）
+      +requested_at
+    }
+    class TriggerSnapshot["TriggerSnapshot（DM-22 の値コピー）"] {
+      <<受け渡し型>>
+      +trigger_id / name / type
+    }
+    class KickoffResult["KickoffResult（DM-18 の要約）"] {
+      <<受け渡し型>>
+      +kickoff_id
+      +status KickoffStatus
+      +issues list~IssueRunSummary~
+      +notes list~str~ I 級の付記・busy 等
+      +started_at / finished_at
+    }
+    class KickoffStatus["KickoffStatus"] {
+      <<enumeration>>
+      ok
+      noop
+      stopped
+      busy
+    }
+    class IssueRunSummary["IssueRunSummary（1 issue の処理結果）"] {
+      <<受け渡し型>>
+      +issue_id / stage / persona
+      +result closed | released | failing | escalated | unsafe | halted
+      +grade Grade | None
+      +returns 差し戻し回数（写像は RESULT_OF の 7 行。released はどの分岐からも使わない FR-071a）
+    }
+    class KickoffBusy["KickoffBusy"] {
+      <<exception>>
+      +ViolationError を継承
+      +current_kickoff_id
+    }
+  }
+
+  namespace orchestrator_internal {
+    class OrchestratorDeps["OrchestratorDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +board_reader / board_writer
+      +settings_reader / member_resolver
+      +vault_reader
+      +run_monitor
+      +stage_catalog / proposal_gate
+      +crew_executor
+    }
+    class OrchestratorHandle["OrchestratorHandle（build の戻り）"] {
+      <<frozen dataclass>>
+      +kickoff_runner KickoffRunner
+      +router APIRouter（/kickoffs）
+    }
+    class OrchestratorConfig["orchestrator/config.json"] {
+      <<Settings>>
+      +max_returns 差し戻し上限（既定 PoC 準拠）
+      +recent_results_n GET 用の保持件数
+      +system_actor claim／release／回収コメントの bd actor（P5D-037）
+      +comment_marker 既定 [orchestrator]
+      +review_persona 既定 planner
+    }
+    class SingleFlight["SingleFlight"] {
+      <<VO>>
+      +lock 非ブロッキング
+      +current kickoff_id | None
+      +start() 印の検査・発番・印立てを原子的に行う（断られた側は発番しない C-4）
+    }
+    class KickoffRecord["KickoffRecord（GET /kickoffs 用）"] {
+      <<VO>>
+      +kickoff_id / ctx
+      +status running | done | rejected（rejected は本 feature の範囲外＝断りを積まない FR-012a・SD-11）
+      +result KickoffResult | None
+    }
+    class IssueRun["IssueRun（1 issue の処理状態）"] {
+      <<VO>>
+      +issue Issue / spec StageSpec / member Member
+      +project Project / limits / rules / hooks / templates TaskTemplates（IF-50 D16-h）
+      +human_guidance list~str~
+      +returns int（**盤面の写し**。判定の出所は毎回引き直す comments C-5）
+      +outcome CrewOutcome
+    }
+    class HandOff["HandOff（人間へ渡す統一経路）"] {
+      <<VO>>
+      +reason guard_children | returns_exceeded | unsafe | folder_missing | config_missing
+      +detail 子 ID 一覧・済み処理・不在パス
+      +render() [orchestrator] コメント本文
+    }
+    class RecordStore["RecordStore（直近 N 件の保持。C-8）"] {
+      <<入れ物>>
+      +capacity recent_results_n
+      +open() / complete() / get() / current()
+      +注 threading.Lock 1 つで守る（router と周回スレッドが同時に触る）。溢れたら古い done から捨てる
+    }
+    class Ports["Ports（service 各ファイルの第 1 引数。C-8）"] {
+      <<入れ物>>
+      +deps OrchestratorDeps
+      +config OrchestratorConfig
+      +注 振る舞いを持たない（他ファイルから私有属性を読む形を避けるだけ）
+    }
+  }
+
+  ExecutionContext --> LaunchKind
+  ExecutionContext "1" *-- "0..1" TriggerSnapshot
+  KickoffResult --> KickoffStatus
+  KickoffResult "1" *-- "0..*" IssueRunSummary
+  KickoffRecord "1" *-- "1" ExecutionContext
+  KickoffRecord "1" *-- "0..1" KickoffResult
+  IssueRun ..> IssueRunSummary : 終了時に写像
+  HandOff ..> IssueRun : failing へ
+  OrchestratorHandle ..> OrchestratorDeps : build
+  OrchestratorHandle ..> OrchestratorConfig : build が読む
+  SingleFlight ..> KickoffRecord : current
+  RecordStore "1" *-- "0..*" KickoffRecord
+  Ports ..> OrchestratorDeps : 束ねる
+  Ports ..> OrchestratorConfig : 束ねる
+
+  note for LaunchKind "永続化先: なし（コード定数）"
+  note for ExecutionContext "永続化先: なし（インメモリ。trigger／router が組む。correlation_id は含めず contextvar D08-d）"
+  note for TriggerSnapshot "永続化先: なし（インメモリ。DM-22 の値コピー。履歴 csv へは trigger が書く）"
+  note for KickoffResult "永続化先: なし（インメモリ。trigger が履歴 csv に要約を追記、human 起動は GET のみ）"
+  note for KickoffStatus "永続化先: なし（コード定数）"
+  note for IssueRunSummary "永続化先: なし（インメモリ）"
+  note for KickoffBusy "永続化先: なし（インメモリ）"
+  note for OrchestratorDeps "永続化先: なし（インメモリ）"
+  note for OrchestratorHandle "永続化先: なし（インメモリ）"
+  note for OrchestratorConfig "永続化先: ファイル（orchestrator/config.json。開発者が commit）"
+  note for SingleFlight "永続化先: なし（インメモリ。プロセス内 1 つ。再起動で解放）"
+  note for KickoffRecord "永続化先: なし（インメモリ。直近 N 件。再起動で消える P5D-035）"
+  note for IssueRun "永続化先: なし（インメモリ。進行状態の正は盤面 P2）"
+  note for HandOff "永続化先: なし（インメモリ。本文は beads のコメントへ＝board 経由 P5D-034）"
+  note for RecordStore "永続化先: なし（インメモリ。直近 N 件。再起動で消える P5D-035）"
+  note for Ports "永続化先: なし（インメモリ。9 契約と設定の束）"

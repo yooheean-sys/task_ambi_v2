@@ -1,0 +1,1450 @@
+# API Contract — task_ambi_v4 app プロセス（FastAPI）の HTTP 境界（第6フェーズ、D12-c）
+# 正本の範囲: paths・method・応答コード・DTO の形。実装（M1）で FastAPI が生成する /openapi.json と paths／operation 単位で diff する。
+# 出典: settings-F21／orchestrator-F13（P5D-035）／trigger-F11・F09（P5D-039〜042）／DIFF-27（/health。D12-e）／各 MOD の data_model（受け渡し型・内部 VO）
+# 規約: prefix・版番号は置かない（憲章 §2「入口の FastAPI アプリは 1 個」）。認証なし（憲章 §10）。x-mod＝所有 MOD、x-fn＝対応 fn_id。
+#       422＝Problem（validate 違反の一覧。settings／trigger 共通）、404＝Detail、409＝Detail（single-flight busy／プロジェクト削除ガード）。
+#       クライアントは apps/ui（EIF-10）・自分（EIF-11）・Windows 側 PowerShell FSW（EIF-12）。
+openapi: 3.1.0
+info:
+  title: task_ambi_v4 app API
+  version: v4-design
+  description: |
+    モジュラーモノリス app プロセスの HTTP 入口。モジュール間は Protocol（関数呼び出し）で、HTTP は ui／人間／Windows 側からの入口にのみ使う（憲章 §4）。
+    設定の反映区分: 権限ポリシー・コマンド定義は保存と同時に効く、その他（PJ・agents.yaml＝メンバ・tasks.yaml＝段テンプレート・LLM・上限・rules・hooks）は次回 kickoff から（P5D-016・D16）。
+servers:
+  - url: http://localhost:{APP_PORT}
+    description: "WSL2 ホスト内。APP_PORT の実値は付3（環境依存値）"
+    variables:
+      APP_PORT:
+        default: "8000"
+tags:
+  - name: health
+    description: "apps/api 所有（liveness のみ。D12-e）"
+  - name: settings
+    description: "settings MOD（領域 A の CRUD。UC-07／UC-08）"
+  - name: kickoffs
+    description: "orchestrator MOD（human 起動と状態参照。P5D-035）"
+  - name: triggers
+    description: "trigger MOD（トリガー CRUD・手動実行・履歴・watcher・退避経路。UC-09／10）"
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      x-mod: apps/api
+      x-fn: "—（実行エントリ＝ apps/api/src/api/main.py、composition root ＝ app.py／wiring.py／registry.py。DIFF-27／D12-e／DIFF-04）"
+      summary: "liveness（プロセスが起きていれば 200。外部ツールには触れない）"
+      operationId: getHealth
+      responses:
+        "200":
+          description: "起動済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  # ---------------- settings（UC-08 プロジェクト） ----------------
+  /settings/projects:
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F11"
+      summary: "プロジェクト一覧（_program を含む）"
+      operationId: listProjects
+      responses:
+        "200":
+          description: "一覧"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProjectView" }
+    post:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F11"
+      summary: "プロジェクト登録（キー規則 → VaultReader.check_project_folders → project.yaml 書込）"
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectSpec" }
+      responses:
+        "201":
+          description: "登録済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectView" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /settings/projects/{project_key}:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F03"
+      summary: "プロジェクト取得"
+      operationId: getProject
+      responses:
+        "200":
+          description: "プロジェクト"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F11"
+      summary: "プロジェクト編集（role_dir を外すときは当該ペルソナのメンバ＝agents.yaml のキーが居れば拒否 P5D-018）"
+      operationId: updateProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectSpec" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F11"
+      summary: "プロジェクト解除（_program 不可。open issue があるか盤面が読めなければ拒否 D06-j(4)。領域 A の PJ フォルダは _archive へ退避）"
+      operationId: deleteProject
+      responses:
+        "204": { description: "解除済み" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /settings/projects/{project_key}/roles:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F07;settings-F09"
+      summary: "役割ごとの実効設定（閲覧のみ。merge 済みメンバの装備 × policy.csv の許可・段の既定担当と Task.tools。D26）"
+      operationId: listProjectRoles
+      responses:
+        "200":
+          description: "PJ のメンバ全員分（PersonaKey の列挙順）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RolesView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------- settings（UC-07 AI 設定） ----------------
+  /settings/agents:
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F12;settings-F24"
+      summary: "エージェント一覧（project_key で絞り込み可。global 既定と PJ 上書きの merge 結果 D16-d）"
+      operationId: listAgents
+      parameters:
+        - name: project_key
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: "一覧（PJ 指定時は merge 済みメンバ、無指定時は global のペルソナ既定）"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AgentView" }
+  /settings/agents/global/{persona_key}:
+    parameters:
+      - $ref: "#/components/parameters/persona_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F12"
+      summary: "ペルソナ既定の取得（global/agents.yaml の 1 エントリ）"
+      operationId: getGlobalAgent
+      responses:
+        "200":
+          description: "ペルソナ既定"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSpec" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F12;settings-F18"
+      summary: "ペルソナ既定の編集（role・goal・backstory 必須。許可フィールド 10・未知キー拒否 D16-d）"
+      operationId: putGlobalAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentSpec" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSpec" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /settings/agents/{project_key}/{persona_key}:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+      - $ref: "#/components/parameters/persona_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F12"
+      summary: "メンバ取得（merge 済みの解決結果）"
+      operationId: getAgent
+      responses:
+        "200":
+          description: "メンバ"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F12;settings-F18"
+      summary: "メンバ作成・編集（projects/<key>/agents.yaml の 1 エントリを upsert。キーの存在＝メンバ・空 body 可 D16-d。ペルソナは PJ の role_dirs に登録済みであること P5D-018）"
+      operationId: putAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentSpec" }
+      responses:
+        "200":
+          description: "作成・更新済み（台帳再導出済み）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentView" }
+        "422": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F12;settings-F19"
+      summary: "メンバ削除（policy に主体が残れば逆方向 validate で拒否）"
+      operationId: deleteAgent
+      responses:
+        "204": { description: "削除済み" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /settings/tasks/global:
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F25"
+      summary: "段テンプレートの取得（global/tasks.yaml の 7 キー D16-a）"
+      operationId: getGlobalTasks
+      responses:
+        "200":
+          description: "7 キーの段テンプレート"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskTemplatesView" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F18;settings-F24"
+      summary: "段テンプレートの編集（7 キー必須。{変数} は許可集合＋段別必須の validate D16-c）"
+      operationId: putGlobalTasks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskTemplatesView" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskTemplatesView" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /settings/tasks/{project_key}:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F25"
+      summary: "PJ の段テンプレート上書きの取得（キー単位・任意 D16-f）"
+      operationId: getProjectTasks
+      responses:
+        "200":
+          description: "上書き分（無ければ空）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskTemplatesView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F18;settings-F24"
+      summary: "PJ の段テンプレート上書きの編集（キー丸ごと置換）"
+      operationId: putProjectTasks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskTemplatesView" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskTemplatesView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F24"
+      summary: "PJ の上書きを全て解除（global の 7 キーに戻る）"
+      operationId: deleteProjectTasks
+      responses:
+        "204": { description: "解除済み" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /settings/llm-profiles:
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F13"
+      summary: "LLM プロファイル一覧（既定 1 つを含む）"
+      operationId: listLlmProfiles
+      responses:
+        "200":
+          description: "一覧"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LlmProfilesView" }
+    post:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F13"
+      summary: "LLM プロファイル作成（api_key は参照名のみ。実値は .env）"
+      operationId: createLlmProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LlmProfileSpec" }
+      responses:
+        "201":
+          description: "作成済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LlmProfileView" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /settings/llm-profiles/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F13"
+      summary: "LLM プロファイル取得"
+      operationId: getLlmProfile
+      responses:
+        "200":
+          description: "プロファイル"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LlmProfileView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F13"
+      summary: "LLM プロファイル編集（is_default=true で既定を切替。context_window ≤ reserve は拒否）"
+      operationId: updateLlmProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LlmProfileSpec" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LlmProfileView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F13"
+      summary: "LLM プロファイル削除（既定・agents.yaml の llm: から参照中は拒否 D16）"
+      operationId: deleteLlmProfile
+      responses:
+        "204": { description: "削除済み" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  /settings/limits:
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F14"
+      summary: "上限ポリシー（global 既定＋PJ 上書き一覧）"
+      operationId: getLimits
+      responses:
+        "200":
+          description: "上限"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LimitsView" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F14"
+      summary: "global 既定の置換"
+      operationId: putGlobalLimits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LimitSpec" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LimitsView" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /settings/limits/{project_key}:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F14"
+      summary: "PJ 上書きの設定・置換"
+      operationId: putProjectLimits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LimitSpec" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LimitsView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F14"
+      summary: "PJ 上書きの削除（global 既定に戻す）"
+      operationId: deleteProjectLimits
+      responses:
+        "204": { description: "削除済み" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /settings/commands:
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F15"
+      summary: "コマンド定義一覧（DM-26。AI 到達不能領域 global/commands.yaml）"
+      operationId: listCommands
+      responses:
+        "200":
+          description: "一覧"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CommandDef" }
+    post:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F15"
+      summary: "コマンド定義作成（argv は文字列リスト固定・shell 文字列不可）"
+      operationId: createCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommandDef" }
+      responses:
+        "201":
+          description: "作成済み（保存と同時に効く）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommandDef" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /settings/commands/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F15"
+      summary: "コマンド定義取得"
+      operationId: getCommand
+      responses:
+        "200":
+          description: "定義"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommandDef" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F15"
+      summary: "コマンド定義編集"
+      operationId: updateCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommandDef" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommandDef" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F15;settings-F20"
+      summary: "コマンド定義削除（policy の cmd: から参照中は拒否 FN-54）"
+      operationId: deleteCommand
+      responses:
+        "204": { description: "削除済み" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  /settings/policies/{project_key}:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F16"
+      summary: "権限ポリシー（projects/<key>/policy.csv の p／g 行）"
+      operationId: getPolicy
+      responses:
+        "200":
+          description: "ポリシー"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F16;settings-F18;settings-F19;settings-F20"
+      summary: "権限ポリシーの置換（候補全体を validate 3 種＋casbin 構文で検査してから書く。保存と同時に効く）"
+      operationId: putPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PolicySpec" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  /settings/rules/projects/{project_key}:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F17"
+      summary: "PJ 共通ルール本文（projects/<key>/rules.md）"
+      operationId: getProjectRules
+      responses:
+        "200":
+          description: "本文"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TextBody" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F17"
+      summary: "PJ 共通ルール本文の置換"
+      operationId: putProjectRules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TextBody" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TextBody" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /settings/hooks/{project_key}:
+    parameters:
+      - $ref: "#/components/parameters/project_key"
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F17"
+      summary: "hooks 設定（projects/<key>/hooks.yaml → HooksConfig）"
+      operationId: getHooks
+      responses:
+        "200":
+          description: "hooks"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HooksConfig" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F17;settings-F18"
+      summary: "hooks 設定の置換（hook 名は executor の hook_catalog で解決可能であること）"
+      operationId: putHooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HooksConfig" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HooksConfig" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  /settings/humans:
+    get:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F17"
+      summary: "人間 actor の宣言（global/humans.yaml。P5D-019。F21 の列挙から漏れていた分を第6 で追加）"
+      operationId: getHumans
+      responses:
+        "200":
+          description: "人間の bd actor 名一覧"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HumansView" }
+    put:
+      tags: [settings]
+      x-mod: settings
+      x-fn: "settings-F21;settings-F17"
+      summary: "人間 actor 一覧の置換（台帳の bd_actor と重複する名は拒否）"
+      operationId: putHumans
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HumansView" }
+      responses:
+        "200":
+          description: "更新済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HumansView" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  # ---------------- orchestrator（human 起動） ----------------
+  /kickoffs:
+    post:
+      tags: [kickoffs]
+      x-mod: orchestrator
+      x-fn: "orchestrator-F13;orchestrator-F02"
+      summary: "human 起動（ExecutionContext(kind=human) を組みワーカースレッドで run。single-flight 中は 409）"
+      operationId: createKickoff
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KickoffRequest" }
+      responses:
+        "202":
+          description: "受付（kickoff_id。結果は GET で参照）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KickoffAccepted" }
+        "409":
+          description: "single-flight 中（KickoffBusy。current_kickoff_id を返す）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KickoffBusyDetail" }
+  /kickoffs/current:
+    get:
+      tags: [kickoffs]
+      x-mod: orchestrator
+      x-fn: "orchestrator-F13;orchestrator-F14"
+      summary: "進行中の kickoff（無ければ running=false）"
+      operationId: getCurrentKickoff
+      responses:
+        "200":
+          description: "現在の状態"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrentKickoff" }
+  /kickoffs/{kickoff_id}:
+    parameters:
+      - name: kickoff_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [kickoffs]
+      x-mod: orchestrator
+      x-fn: "orchestrator-F13;orchestrator-F14"
+      summary: "kickoff の状態（直近 N 件インメモリ。再起動で消える。結果の正は盤面）"
+      operationId: getKickoff
+      responses:
+        "200":
+          description: "KickoffRecord"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KickoffRecordView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------- trigger（UC-09／10） ----------------
+  /triggers:
+    get:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F05"
+      summary: "トリガー一覧（次回実行時刻・直近結果を含む表示用）"
+      operationId: listTriggers
+      responses:
+        "200":
+          description: "一覧"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TriggerView" }
+    post:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F05"
+      summary: "トリガー追加（validate → triggers.yaml 書込 → add_job／watcher 開始）"
+      operationId: createTrigger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TriggerSpec" }
+      responses:
+        "201":
+          description: "追加済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TriggerView" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /triggers/{trigger_id}:
+    parameters:
+      - $ref: "#/components/parameters/trigger_id"
+    get:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11"
+      summary: "トリガー取得"
+      operationId: getTrigger
+      responses:
+        "200":
+          description: "トリガー"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TriggerView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F05"
+      summary: "トリガー編集（既定トリガーは間隔と有効/無効のみ可 FN-30）"
+      operationId: updateTrigger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TriggerSpec" }
+      responses:
+        "200":
+          description: "更新済み（modify_job 反映）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TriggerView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+    patch:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F05"
+      summary: "有効/無効トグル（pause／resume）"
+      operationId: toggleTrigger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TriggerToggle" }
+      responses:
+        "200":
+          description: "切替済み"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TriggerView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F05"
+      summary: "トリガー削除（次回以降の発火停止のみ。進行中 kickoff は完走 FN-33。既定トリガーは拒否）"
+      operationId: deleteTrigger
+      responses:
+        "204": { description: "削除済み" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /triggers/{trigger_id}/run:
+    parameters:
+      - $ref: "#/components/parameters/trigger_id"
+    post:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F09;trigger-F10"
+      summary: "手動実行（fire(kind=manual) をワーカースレッドで起動。結果は履歴 csv に。busy も 1 行）"
+      operationId: runTrigger
+      responses:
+        "202":
+          description: "受付（run_id。履歴の行と結ぶ P5D-043）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunAccepted" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /history:
+    get:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F02"
+      summary: "実行履歴（月指定。history_YYYYMM.csv を表示用に読む。status=started の行は未終了）"
+      operationId: listHistory
+      parameters:
+        - name: month
+          in: query
+          required: false
+          description: "YYYYMM。省略時は当月"
+          schema: { type: string, pattern: "^[0-9]{6}$" }
+      responses:
+        "200":
+          description: "履歴行"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HistoryRow" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /watcher:
+    get:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F08"
+      summary: "watcher・scheduler のインメモリ状態（DM-25。API 越しにのみ読める）"
+      operationId: getWatcher
+      responses:
+        "200":
+          description: "状態"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WatcherView" }
+  /hooks/file:
+    post:
+      tags: [triggers]
+      x-mod: trigger
+      x-fn: "trigger-F11;trigger-F08"
+      summary: "ファイル投下の退避経路（Windows 側 PowerShell FSW から。完了検知 → fire(kind=file) に合流 P5D-042）"
+      operationId: postFileHook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FileHookRequest" }
+      responses:
+        "202":
+          description: "受付（完了検知後に発火。対応する file トリガーが無効なら何もしない）"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileHookAccepted" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+components:
+  parameters:
+    project_key:
+      name: project_key
+      in: path
+      required: true
+      description: "プロジェクトキー（FN-25 キー規則。_program は予約）"
+      schema: { type: string }
+    persona_key:
+      name: persona_key
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/PersonaKey" }
+    trigger_id:
+      name: trigger_id
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Problem:
+      description: "validate 違反（候補全体を検査した結果の一覧。UI に表示し beads には書かない D07-g）"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: "未登録・不明 id・期限切れ"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Detail" }
+    Conflict:
+      description: "現在の状態と衝突（プロジェクト削除ガード・予約キー）"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Detail" }
+
+  schemas:
+    # ---- 共通 ----
+    Detail:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
+    Problem:
+      type: object
+      required: [problems]
+      properties:
+        problems:
+          type: array
+          items: { $ref: "#/components/schemas/ValidationProblem" }
+    ValidationProblem:
+      type: object
+      required: [where, kind, reason]
+      properties:
+        where: { type: string, description: "ファイル・キー" }
+        kind:
+          type: string
+          enum: [forward, orphan, cmd_ref, key_rule, folder_missing, unresolvable, trigger_spec]
+          description: "settings の 6 種（settings data_model ValidationProblem）＋trigger の validate（trigger_spec）"
+        reason: { type: string }
+    TextBody:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string, description: "markdown 本文" }
+    PersonaKey:
+      type: string
+      enum: [planner, project_lead, system_engineer, doc_lead, architect, programmer, analyst, writer, general]
+      description: "kernel の列挙（common data_model）。agents.yaml のキー・tasks.yaml の agent: の許容値（D16。P5D-017 は D16 で改訂）"
+    Health:
+      type: object
+      required: [status, app, env_label, modules]
+      properties:
+        status: { type: string, enum: [ok] }
+        app: { type: string, description: "ルート config.json のアプリ名" }
+        env_label: { type: string, description: "ルート config.json の環境ラベル" }
+        modules:
+          type: array
+          items: { type: string }
+          description: "組み立て結果（実際に組み立てられた MOD 名。既定はルート config.json 由来。FR-017／DIFF-03）"
+
+    # ---- settings ----
+    ProjectFolders:
+      type: object
+      required: [pj_input_dir, role_dirs, outcome_dir]
+      properties:
+        pj_input_dir: { type: string, description: "vault ルート相対（P5D-009）" }
+        role_dirs:
+          type: object
+          additionalProperties: { type: string }
+          description: "persona_key → vault ルート相対。メンバを作るペルソナ（projects/<key>/agents.yaml のキー）全員分が必須（P5D-018）"
+        outcome_dir: { type: string, description: "vault ルート相対（PJ 直下 outcome/）" }
+    ProjectRepos:
+      type: object
+      additionalProperties: false
+      description: "プロジェクトのリポジトリ対応付け（CFG-74・D24）。任意。両項目とも未登録のとき、保存側（project.yaml）では `repos` キー自体を省略し、読取側（HTTP 応答）では null を返す。形式のみの緩い検査（実在・git アクセス可否は見ない）"
+      properties:
+        remote_url:
+          type: [string, "null"]
+          description: "リモートリポジトリの URL（https/http/SCP ライク）"
+        local_path:
+          type: [string, "null"]
+          description: "ローカルリポジトリのパス（OS の絶対パス。Vault 外の実リポジトリを指す）"
+    ProjectSpec:
+      type: object
+      required: [project_key, name, folders]
+      properties:
+        project_key: { type: string }
+        name: { type: string }
+        folders: { $ref: "#/components/schemas/ProjectFolders" }
+        repos:
+          anyOf:
+            - $ref: "#/components/schemas/ProjectRepos"
+            - type: "null"
+          description: "未登録のプロジェクトでは null（CFG-74・D24）"
+    ProjectView:
+      allOf:
+        - $ref: "#/components/schemas/ProjectSpec"
+        - type: object
+          required: [is_reserved]
+          properties:
+            is_reserved: { type: boolean, description: "_program のみ true（P5D-014）" }
+    McpSpec:
+      type: object
+      required: [name, transport, command]
+      properties:
+        name: { type: string }
+        transport: { type: string }
+        command: { type: string }
+        args:
+          type: array
+          items: { type: string }
+    AgentSpec:
+      type: object
+      description: "agents.yaml の 1 エントリ（CrewAI Agent の同名フィールド。許可 10・未知キー拒否・禁止キー allow_delegation 等 D16-d）。global は role・goal・backstory 必須、PJ は全て任意（空 object 可＝global 既定のまま参加）"
+      additionalProperties: false
+      properties:
+        role: { type: string, description: "CrewAI Agent.role（旧 display_name を統合 D16-h）" }
+        goal: { type: string }
+        backstory: { type: string, description: "旧 global/roles/<persona>.md の本文を吸収（D16）" }
+        llm: { type: [string, "null"], description: "llm_profiles.yaml の name。null なら global → default の順に解決（D16-h）" }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/ToolName" }
+          description: "装備（ToolName 列挙 D16-b）。PJ 側はリスト丸ごと置換。許可（policy.csv）とは別層"
+        skills:
+          type: array
+          items: { type: string }
+        mcps:
+          type: array
+          items: { $ref: "#/components/schemas/McpSpec" }
+        max_iter: { type: [integer, "null"] }
+        max_rpm: { type: [integer, "null"] }
+        max_execution_time: { type: [integer, "null"] }
+    AgentView:
+      allOf:
+        - $ref: "#/components/schemas/AgentSpec"
+        - type: object
+          required: [member_id, persona_key, bd_actor, casbin_subject]
+          properties:
+            member_id: { type: string, description: "<project_key>.<persona_key>" }
+            project_key: { type: [string, "null"], description: "global のペルソナ既定行では null" }
+            persona_key: { $ref: "#/components/schemas/PersonaKey" }
+            bd_actor: { type: string, description: "台帳から導出（保存しない）" }
+            casbin_subject: { type: string, description: "member:<member_id>" }
+            resolved_llm_profile: { type: string, description: "解決後のプロファイル名（PJ→global→default D16-h）" }
+    ToolName:
+      type: string
+      enum: [read_issue, record_progress, list_input_files, read_input_file, list_outcome_files, read_outcome_file, escalate_to_human, propose_breakdown, write_outcome, complete_issue, run_command, submit_review, list_repo_files, read_repo_file, write_repo_file, delete_repo_file]
+      description: "Tool 登録名（kernel の列挙 16 種。D16-b ＋ D25 の repo 系 4 種）"
+    TaskTemplateSpec:
+      type: object
+      description: "tasks.yaml の 1 キー（CrewAI Task の同名フィールド。許可 4・未知キー拒否 D16-f）"
+      additionalProperties: false
+      required: [description, expected_output]
+      properties:
+        description: { type: string, description: "変数スロット込み本文（許可 17＝D16-c ＋ D24 の repository_* 2 種。段別必須の validate D16-c）" }
+        expected_output: { type: string }
+        agent: { $ref: "#/components/schemas/PersonaKey" }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/ToolName" }
+          description: "Task.tools（あれば Agent.tools を上書き D16-a。review_* の submit_review 制限はここ）"
+    TaskTemplatesView:
+      type: object
+      description: "段テンプレート（キー: program／project／subrequest／child／plain／review_normal／review_final。global は 7 キー必須・PJ は任意のキーのみ D16-a）"
+      additionalProperties: { $ref: "#/components/schemas/TaskTemplateSpec" }
+    RoleToolView:
+      type: object
+      required: [tool, equipped, allowed]
+      properties:
+        tool: { $ref: "#/components/schemas/ToolName" }
+        equipped: { type: boolean, description: "装備している（merge 済み agents.yaml の tools、段の行では Task.tools）" }
+        allowed: { type: boolean, description: "policy.csv が tool:<name> の execute を許す（判定器で判定。g 行・keyMatch を含む）" }
+    RoleStageView:
+      type: object
+      required: [stage, replaces_tools, tools]
+      description: "この役割が tasks.yaml の agent: で既定担当になっている段"
+      properties:
+        stage: { type: string, description: "段キー（7 種のいずれか）" }
+        replaces_tools:
+          type: boolean
+          description: "段に Task.tools があり、この段では装備を置き換える（D16-a）"
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/RoleToolView" }
+          description: "replaces_tools のときだけ、段の装備と許可の対照（それ以外は空）"
+    PolicyGrant:
+      type: object
+      required: [obj, act]
+      description: "policy.csv の p 行のうち tool: 以外の対象（2 段目の許可。vault:*・cmd:*・repo:files）"
+      properties:
+        obj: { type: string }
+        act: { type: string }
+    RoleView:
+      type: object
+      required: [persona_key, member_id, casbin_subject, role, goal, llm_profile, stages, tools, grants]
+      properties:
+        persona_key: { $ref: "#/components/schemas/PersonaKey" }
+        member_id: { type: string }
+        casbin_subject: { type: string }
+        role: { type: string }
+        goal: { type: string }
+        llm_profile: { type: string, description: "解決後のプロファイル名（PJ→global→default D16-h）" }
+        stages:
+          type: array
+          items: { $ref: "#/components/schemas/RoleStageView" }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/RoleToolView" }
+          description: "ToolName のうち装備か許可の少なくとも一方が真のもの（列挙順）"
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/PolicyGrant" }
+    StageToolsView:
+      type: object
+      required: [stage, tools]
+      description: "agent: を持たずに Task.tools を持つ段（review_* など。担当は orchestrator の review_persona で決まり settings からは見えない）"
+      properties:
+        stage: { type: string }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/ToolName" }
+    RolesView:
+      type: object
+      required: [project_key, roles, stage_tools]
+      properties:
+        project_key: { type: string }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/RoleView" }
+        stage_tools:
+          type: array
+          items: { $ref: "#/components/schemas/StageToolsView" }
+    LlmProfileSpec:
+      type: object
+      required: [name, provider_kind, model_id, context_window]
+      properties:
+        name: { type: string }
+        provider_kind: { type: string, enum: [openai_compatible, openrouter], description: "P5D-013。claude_cli 等の CLI backend は本 ver 対象外（D12 §6）" }
+        base_url: { type: string, description: "openai_compatible で必須" }
+        model_id: { type: string }
+        context_window: { type: integer, minimum: 1 }
+        api_key_ref: { type: string, description: ".env のキー名。実値は executor だけが読む" }
+        extra_headers:
+          type: object
+          additionalProperties: { type: string }
+        is_default: { type: boolean, default: false }
+    LlmProfileView:
+      allOf:
+        - $ref: "#/components/schemas/LlmProfileSpec"
+        - type: object
+          required: [threshold_T]
+          properties:
+            threshold_T: { type: integer, description: "context_window − context_reserve_tokens（導出）" }
+    LlmProfilesView:
+      type: object
+      required: [profiles, default]
+      properties:
+        profiles:
+          type: array
+          items: { $ref: "#/components/schemas/LlmProfileView" }
+        default: { type: string }
+    LimitSpec:
+      type: object
+      required: [max_requests_per_kickoff, max_cost_per_kickoff]
+      properties:
+        max_requests_per_kickoff: { type: integer, minimum: 1 }
+        max_cost_per_kickoff: { type: number, minimum: 0 }
+    LimitsView:
+      type: object
+      required: [global, overrides]
+      properties:
+        global: { $ref: "#/components/schemas/LimitSpec" }
+        overrides:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/LimitSpec" }
+          description: "project_key → 上書き"
+    CommandDef:
+      type: object
+      required: [name, argv]
+      properties:
+        name: { type: string, description: "cmd:<name> の名前側" }
+        argv:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: "固定 argv・shell=False・引数は AI に渡させない（D07-e）"
+    PolicyRow:
+      type: object
+      required: [ptype, fields]
+      properties:
+        ptype: { type: string, enum: [p, g] }
+        fields:
+          type: array
+          items: { type: string }
+          description: "p: [member:<id>, obj, act]／g: [member:<id>, role_*]"
+    PolicySpec:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/PolicyRow" }
+    PolicyView:
+      allOf:
+        - $ref: "#/components/schemas/PolicySpec"
+        - type: object
+          required: [project_key]
+          properties:
+            project_key: { type: string }
+            model_conf: { type: string, description: "global/model.conf の本文（参照用）" }
+    HookRef:
+      type: object
+      required: [name, points]
+      properties:
+        name: { type: string, description: "executor の hook_catalog の登録名" }
+        points:
+          type: array
+          items: { type: string, enum: [PRE_TOOL_CALL, POST_TOOL_CALL] }
+        agents:
+          type: array
+          items: { type: string }
+          description: "絞り込み（任意）。値は agents.yaml のキー＝PersonaKey（D16）"
+    HooksConfig:
+      type: object
+      required: [hooks]
+      properties:
+        hooks:
+          type: array
+          items: { $ref: "#/components/schemas/HookRef" }
+    HumansView:
+      type: object
+      required: [human_actors]
+      properties:
+        human_actors:
+          type: array
+          items: { type: string }
+          description: "人間の bd actor 名（単一利用者。global/humans.yaml）"
+
+    # ---- orchestrator ----
+    ClaimFilter:
+      type: object
+      required: [labels]
+      properties:
+        labels:
+          type: array
+          items: { type: string }
+          description: "AND 条件。既定 [\"role:executor\"]"
+        project_key: { type: [string, "null"] }
+    KickoffRequest:
+      type: object
+      properties:
+        claim_filter: { $ref: "#/components/schemas/ClaimFilter" }
+    KickoffAccepted:
+      type: object
+      required: [kickoff_id, status]
+      properties:
+        kickoff_id: { type: string }
+        status: { type: string, enum: [running] }
+    KickoffBusyDetail:
+      allOf:
+        - $ref: "#/components/schemas/Detail"
+        - type: object
+          required: [current_kickoff_id]
+          properties:
+            current_kickoff_id: { type: string }
+    IssueRunSummary:
+      type: object
+      required: [issue_id, stage, persona, result, returns]
+      properties:
+        issue_id: { type: string }
+        stage: { type: string, enum: [program, project, subrequest, child, plain] }
+        persona: { $ref: "#/components/schemas/PersonaKey" }
+        result: { type: string, enum: [closed, released, failing, escalated, unsafe, halted] }
+        grade: { type: [string, "null"], enum: [F, W, I, null] }
+        returns: { type: integer, minimum: 0, description: "差し戻し回数" }
+    KickoffResult:
+      type: object
+      required: [kickoff_id, status, issues, notes, started_at]
+      properties:
+        kickoff_id: { type: string }
+        status: { type: string, enum: [ok, noop, stopped, busy] }
+        issues:
+          type: array
+          items: { $ref: "#/components/schemas/IssueRunSummary" }
+        notes:
+          type: array
+          items: { type: string }
+          description: "I 級の付記・busy 等"
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+    ExecutionContextView:
+      type: object
+      required: [kind, claim_filter, requested_at]
+      properties:
+        kind: { type: string, enum: [human, timer, file, manual] }
+        trigger_snapshot:
+          type: [object, "null"]
+          properties:
+            trigger_id: { type: string }
+            name: { type: string }
+            type: { type: string, enum: [cron, interval, file] }
+        dropped_path: { type: [string, "null"] }
+        claim_filter: { $ref: "#/components/schemas/ClaimFilter" }
+        requested_at: { type: string, format: date-time }
+    KickoffRecordView:
+      type: object
+      required: [kickoff_id, status, ctx]
+      properties:
+        kickoff_id: { type: string }
+        status: { type: string, enum: [running, done, rejected] }
+        ctx: { $ref: "#/components/schemas/ExecutionContextView" }
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/KickoffResult"
+            - type: "null"
+    CurrentKickoff:
+      type: object
+      required: [running]
+      properties:
+        running: { type: boolean }
+        record:
+          oneOf:
+            - $ref: "#/components/schemas/KickoffRecordView"
+            - type: "null"
+
+    # ---- trigger ----
+    LaunchCond:
+      type: object
+      required: [labels]
+      properties:
+        labels:
+          type: array
+          items: { type: string }
+          description: "既定 [\"role:executor\"]（D06-h）"
+        project_key: { type: [string, "null"] }
+    TriggerSpec:
+      type: object
+      required: [name, type, spec, condition, enabled]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        type: { type: string, enum: [cron, interval, file] }
+        spec:
+          type: string
+          description: "cron: crontab 5 フィールド（秒なし・曜日 0=月）／interval: 秒（min_interval_sec 以上）／file: watch_dir は DOWNLOADS_DIR 相対（既定 .・外縁検査 D15-e）"
+        condition: { $ref: "#/components/schemas/LaunchCond" }
+        enabled: { type: boolean }
+    TriggerView:
+      allOf:
+        - $ref: "#/components/schemas/TriggerSpec"
+        - type: object
+          required: [trigger_id, is_default]
+          properties:
+            trigger_id: { type: string }
+            is_default: { type: boolean, description: "ready 巡回（削除不可・間隔と有効/無効のみ可）" }
+            next_fire_at: { type: [string, "null"], format: date-time, description: "scheduler から（インメモリ）" }
+            last_result:
+              oneOf:
+                - $ref: "#/components/schemas/HistoryRow"
+                - type: "null"
+              description: "直近の履歴行（表示用）"
+    TriggerToggle:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+    RunAccepted:
+      type: object
+      required: [run_id]
+      properties:
+        run_id: { type: string, description: "trigger が発番。履歴の開始行と結ぶ（P5D-043）" }
+    HistoryRow:
+      type: object
+      required: [run_id, trigger_id, trigger_name, trigger_type, kind, started_at, status]
+      description: "RunHistoryRow（DM-24。P5D-039＋P5D-043 の 15 列）"
+      properties:
+        run_id: { type: string }
+        kickoff_id: { type: [string, "null"] }
+        trigger_id: { type: string }
+        trigger_name: { type: string }
+        trigger_type: { type: string, enum: [cron, interval, file] }
+        kind: { type: string, enum: [timer, file, manual] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        duration_sec: { type: [number, "null"] }
+        status: { type: string, enum: [started, ok, noop, stopped, busy] }
+        issues_ok: { type: [integer, "null"] }
+        issues_failing: { type: [integer, "null"] }
+        notes: { type: [string, "null"] }
+        dropped_path: { type: [string, "null"] }
+        correlation_id: { type: string }
+    WatcherView:
+      type: object
+      required: [scheduler_running, watchers, running]
+      properties:
+        scheduler_running: { type: boolean }
+        watchers:
+          type: array
+          items:
+            type: object
+            required: [trigger_id, watch_dir, alive]
+            properties:
+              trigger_id: { type: string }
+              watch_dir: { type: string }
+              alive: { type: boolean, description: "スレッド生死（死亡しても自動復旧しない 憲章 §10）" }
+        next_fire_at:
+          type: object
+          additionalProperties: { type: string, format: date-time }
+          description: "trigger_id → 次回実行時刻"
+        running: { type: boolean, description: "進行中の fire があるか" }
+    FileHookRequest:
+      type: object
+      required: [path]
+      properties:
+        path: { type: string, description: "投下ファイルの絶対パス（WSL から見える形。file トリガーの watch_dir 配下であること）" }
+        source: { type: string, enum: [hook], default: hook }
+    FileHookAccepted:
+      type: object
+      required: [accepted]
+      properties:
+        accepted: { type: boolean }
+        matched_trigger_ids:
+          type: array
+          items: { type: string }

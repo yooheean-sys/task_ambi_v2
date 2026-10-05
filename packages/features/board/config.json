@@ -1,0 +1,7 @@
+{
+  "timeout_sec": 120,
+  "lock_wait_max_attempts": 3,
+  "lock_wait_base_sec": 0.5,
+  "lock_hints": ["lock", "locked", "resource temporarily unavailable", "busy"],
+  "list_limit_none": true
+}

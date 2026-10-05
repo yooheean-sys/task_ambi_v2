@@ -1,0 +1,14 @@
+{
+  "app_name": "task_ambi",
+  "env_label": "dev",
+  "log": {
+    "level": "INFO",
+    "format": "json",
+    "correlation_header": "X-Correlation-ID",
+    "redact_keys": ["*_API_KEY*", "Authorization", "api_key"]
+  },
+  "enabled_modules": ["board", "vault", "settings", "stages", "monitor", "executor", "orchestrator", "trigger", "repo"],
+  "defaults": {
+    "encoding": "utf-8"
+  }
+}

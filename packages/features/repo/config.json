@@ -1,0 +1,7 @@
+{
+  "max_read_bytes": 262144,
+  "max_write_bytes": 1048576,
+  "max_list_entries": 2000,
+  "excluded_dirs": [".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"],
+  "deny_patterns": [".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*"]
+}

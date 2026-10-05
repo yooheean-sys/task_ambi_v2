@@ -1,0 +1,112 @@
+%% trigger（BC-06 トリガー）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p2_domain_model.mmd DM-22〜25／p4_module_contract.csv IF-49（利用）／付録：トリガー §1・§5／D06-h,j・D07-a,b／P5D-039〜042
+%% 記法: classDiagram。trigger は Protocol を提供しないので common_interfaces の namespace は無い（ExecutionContext・TriggerSnapshot・KickoffResult は orchestrator の型を名前参照）。namespace trigger_internal＝MOD 内部／area_b_entities＝設定ファイル領域 B・履歴 csv・DL フォルダの実体
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+classDiagram
+  direction LR
+
+  namespace trigger_internal {
+    class TriggerDeps["TriggerDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +kickoff_runner KickoffRunner
+    }
+    class TriggerHandle["TriggerHandle（build の戻り）"] {
+      <<frozen dataclass>>
+      +router APIRouter（/triggers・/history・/watcher・/hooks/file）
+      +lifespan LifespanFactory（引数なしで呼ぶたびに新しい非同期コンテキストを返す。再入可能）
+    }
+    class TriggerEnv["TriggerEnv（.env）"] {
+      <<Settings>>
+      +TRIGGER_ROOT 領域 B の絶対パス（triggers.yaml・history/）
+      +DOWNLOADS_DIR Windows DL フォルダの絶対パス（任意。file トリガーを使うとき必須。watch_dir の基準。付3 D15-e）
+    }
+    class TriggerConfig["trigger/config.json"] {
+      <<Settings>>
+      +ready_interval_default_sec 既定トリガーの初期間隔（D06-j(1)）
+      +min_interval_sec
+      +misfire_grace_sec
+      +poll_interval_sec PollingObserver（R12-P4 で調整）
+      +stable_seconds 完了検知（X7）
+      +watcher_enabled 退避経路へ切替（P5D-042）
+      +timezone IANA | null（cron の解釈 TZ。既定 null＝システムローカル D15-m。P5-R1 で転記）
+    }
+    class TriggerDef["TriggerDef（DM-22）"] {
+      <<entity>>
+      +trigger_id / name / description
+      +type cron | interval | file
+      +spec crontab 5 フィールド | seconds | watch_dir（DOWNLOADS_DIR 相対・既定 .・外縁検査。付3 D15-e）
+      +condition LaunchCond
+      +enabled bool
+      +is_default ready 巡回（削除不可・間隔と有効/無効のみ可）
+    }
+    class LaunchCond["LaunchCond（DM-23）"] {
+      <<VO>>
+      +labels 既定 role:executor
+      +project_key 任意
+      +to_claim_filter() ClaimFilter
+    }
+    class RunHistoryRow["RunHistoryRow（DM-24。csv 1 行＝1 run）"] {
+      <<VO>>
+      +run_id trigger が発番（開始行と終了の書換えを結ぶ。P5D-043）
+      +kickoff_id（終了時に埋まる）/ trigger_id / trigger_name / trigger_type
+      +kind timer | file | manual
+      +started_at / finished_at / duration_sec
+      +status started | ok | noop | stopped | busy（開始時 started、終了時に書換え）
+      +issues_ok / issues_failing
+      +notes I 級の付記
+      +dropped_path
+      +correlation_id
+    }
+    class WatcherState["WatcherState（DM-25）"] {
+      <<VO>>
+      +scheduler_running bool（scheduler.running。openapi WatcherView に在る P5D-035）
+      +alive bool（スレッドごと）
+      +next_fire_at dict~trigger_id,datetime~（Scheduler から）
+      +running bool
+    }
+    class FileEvent["FileEvent（検知→完了→発火の中間）"] {
+      <<VO>>
+      +trigger_id 重複抑止の鍵の一部（同じ投下でもトリガーが違えば別々に発火）
+      +path / first_seen / last_size / last_mtime
+      +stable_since 完了判定
+      +source watchdog | hook
+    }
+  }
+
+  namespace area_b_entities {
+    class TriggersYaml["<TRIGGER_ROOT>/triggers.yaml"] {
+      <<外部実体>>
+      +triggers[]: id / name / type / spec / condition / enabled / is_default
+    }
+    class HistoryCsv["<TRIGGER_ROOT>/history/history_YYYYMM.csv"] {
+      <<外部実体>>
+      +RunHistoryRow の列（ヘッダ付き。開始時に行を追記し終了時に同じ行を書換え P5D-043）
+    }
+    class DropFolder["DL フォルダ（/mnt/c/…。監視・読取のみ）"] {
+      <<外部実体>>
+      +投下ファイル（消費しない D06-h）
+    }
+  }
+
+  TriggerDef "1" *-- "1" LaunchCond
+  TriggerDef ..> TriggersYaml : 写像
+  RunHistoryRow ..> HistoryCsv : 追記
+  FileEvent ..> DropFolder : 監視
+  FileEvent ..> TriggerDef : file 型の発火
+  TriggerHandle ..> TriggerDeps : build
+  TriggerHandle ..> TriggerEnv : build が読む
+  TriggerHandle ..> TriggerConfig : build が読む
+  WatcherState ..> TriggerDef : next_fire_at
+
+  note for TriggerDeps "永続化先: なし（インメモリ）"
+  note for TriggerHandle "永続化先: なし（インメモリ。apps/api が lifespan を束ねる）"
+  note for TriggerEnv "永続化先: ファイル（リポジトリ直下 .env。環境依存値。DOWNLOADS_DIR は付3 D15-e で追加）"
+  note for TriggerConfig "永続化先: ファイル（trigger/config.json。開発者が commit）"
+  note for TriggerDef "永続化先: なし（インメモリの写像。実体は領域 B triggers.yaml＝宣言が正、起動時に jobstore へ再登録 D07-a）"
+  note for LaunchCond "永続化先: なし（インメモリ。実体は triggers.yaml の condition）"
+  note for RunHistoryRow "永続化先: なし（インメモリ。実体は履歴 csv。開始行→終了時に同じ行を全列埋めて書換え P5D-043）"
+  note for WatcherState "永続化先: なし（インメモリ。REST 越しにのみ読む）"
+  note for FileEvent "永続化先: なし（インメモリ）"
+  note for TriggersYaml "永続化先: ファイル（領域 B。UI で CRUD・commit しない。DEC-003 例外 (a)）"
+  note for HistoryCsv "永続化先: ファイル（領域 B。月ごとに分割・削除しない。開始行の追記＋終了時の行書換え（上書き方式 P5D-043。憲章 §2 例外 (b) の現物が「開始時に書いた行を終了時に確定値で埋める書換え」を明示的に許すので適合する））"
+  note for DropFolder "永続化先: ファイル（人間所有の Windows 側フォルダ。システムは監視・stat のみで書かない）"

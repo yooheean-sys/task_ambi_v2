@@ -1,0 +1,64 @@
+%% executor（BC-03 分解・遂行 — CrewAI 実行器）内部シーケンス 主図 — CrewExecutor.run(CrewSpec) 1 回: LLM 構築（Hook 装着）→ Agent・Tools・hooks → kickoff → Tool 呼び出し（権限判定→Protocol）→ 翻訳 → CrewOutcome — task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-48（提供）・IF-02/17/29/30/33〜35/37/40〜43（利用）／p2_sequence_UC-I1.mmd 14-21・30-36・41-43／D06-e／D09-b,f／P5D-013/021/022/029〜032／FN-18/50/46/47/08/13／PoC renkei crew.py（build_llm・build_crew・build_review_crew）・tools.py（11 Tool）・casbin tools.py（RunCommandTool）・ai_control probe/p1/interceptor.py（Z-1〜Z-6）（PoC 基準版、読取のみ）
+%% レーン規約（D11-c／P5D-003／P5D-029）: 呼び手＝Protocol 名／自 MOD 内部＝ファイル単位＋パッケージ内分割（tools/）＋ライブラリ（lib:crewai）／利用先＝Protocol 名／外部＝LLM API・.env。kernel は Note のみ
+sequenceDiagram
+  autonumber
+  participant CE as CrewExecutor
+  participant Svc as executor/service.py<br/>（CrewExecutorImpl: LLM・Agent・Crew 構築、実行、翻訳）
+  participant Tools as executor/tools/<br/>（GuardedTool 基底＋12 Tool）
+  participant Crew as executor/lib:crewai<br/>（LLM・Agent・Task・Crew・hooks・BaseInterceptor）
+  participant Env as .env
+  participant Hook as LLMHttpHook
+  participant LLM as LLM API
+  participant Az as Authorizer／CommandRegistry
+  participant V as VaultReader／OutcomeWriter
+  participant B as BoardReader／BoardWriter
+
+  CE->>Svc: run(spec: CrewSpec)（PromptBundle・Member・HooksConfig・mode・issue_id・ProjectFolders・purpose）
+  Svc->>Env: api_key ＝ .env の対応表を直読み（dotenv_values）して api_key_ref を引く（OS 環境変数は見ない＝ SD-09/SD-10・憲章 §5）<br/>参照名が空 → 引かずに ""／キーが無い → ExecutorFailure(build)／キーがあり値が空 → "" のまま続行
+  Svc->>Crew: LLM を構築（P5D-030）: provider_kind=openai_compatible → LLM(model="openai/<model_id>", base_url, api_key, extra_headers, interceptor=adapter)<br/>openrouter → LLM(model="openrouter/<model_id>", api_key, interceptor=adapter)（1.15.17 で実測済み: 実体は OpenAICompatibleCompletion・base_url は既定が自動・interceptor は保持・extra_headers は additional_params へ＝ SD-02）
+  Note over Svc,Hook: adapter＝executor 内の BaseInterceptor 実装。on_outbound/on_inbound/aon_* をそのまま LLMHttpHook（build 時注入）へ委譲する（D09-b。crewai 型は executor の外に出さない）
+  Svc->>Crew: Agent(role=bundle.role, goal=bundle.goal, backstory=bundle.backstory, llm, tools=装備, max_iter/max_rpm=member 優先・config 既定／max_execution_time=member をそのまま（設定に欄が無い＝ C2）, max_retry_limit=1, allow_delegation=False)<br/>人格の 3 欄は bundle 側（C4）。skills・mcps は 1.15.17 では渡さない（型が Member 側と合わない＝ SD-22）／Task(description=bundle.task_description, expected_output)／Crew(process=sequential)
+  Svc->>Tools: 装備を解決（D16-a/b）: member.tools（agents.yaml）を bundle.task_tools（tasks.yaml の Task.tools）が上書きし ToolRegistry（kernel ToolName 12 種）で構築。旧 mode・purpose 別集合（P5D-031）の内訳＝共通＝read_issue・record_progress・list_input_files・read_input_file・list_outcome_files・read_outcome_file・escalate_to_human<br/>propose＝＋propose_breakdown／execute＝＋write_outcome・complete_issue・run_command／review＝submit_review のみ
+  Svc->>Crew: HooksConfig の名前を executor の hook カタログから引いて register_hook（任意の追加 hook。権限判定はここに置かない P5D-032）
+  Svc->>Crew: crew.kickoff()
+
+  loop エージェントの推論と Tool 呼び出し
+    Crew->>Hook: on_outbound(request)（httpx transport 層。計測・上限判定は monitor）
+    alt RunHalted（上限超過。BaseException 直系）
+      Hook-->>Svc: RunHalted がリトライを素通りして伝播（Z-6）
+      Svc->>Svc: outcome.halted=True・halted_reason を記録し kickoff を打ち切る
+    else
+      Hook-->>LLM: 送信
+      LLM-->>Hook: 応答（on_inbound で観測）
+      Crew->>Tools: Tool 呼び出し（例 write_outcome(filename, content)）
+      Tools->>Az: enforce(member:<id>, "tool:<name>", "execute")（GuardedTool 基底。フェイルクローズ P5D-032）
+      alt 拒否
+        Tools-->>Crew: 戻り値で拒否の指摘（例外にしない。AI に直させる）＋events に tool_denied
+      else 許可
+        alt vault 系 Tool
+          Tools->>Az: enforce(member:<id>, "vault:<area>", "read"|"write")
+          Tools->>Tools: 役割の絞り: folders ＝ spec.folders.model_copy(update={role_dirs: member.persona_key の 1 件})（呼び出しのたびに通す。宣言に無ければ {}＝ SD-14）
+          Tools->>V: list_inputs／read_input／read_outcome_file／write_outcome（絞った ProjectFolders を渡す）
+          V-->>Tools: FileRef 一覧／本文／WrittenPath（overwritten なら events に outcome_overwritten）
+        else run_command
+          Tools->>Az: enforce(member:<id>, "cmd:<name>", "execute")
+          Tools->>Az: resolve_command(name) → argv（固定・shell=False・引数は AI に渡させない）
+          Tools->>Tools: subprocess.run(argv, timeout=config)→ 標準出力を戻り値に（短命 subprocess。憲章 §2 CLI 経由）
+        else read_issue／record_progress
+          Tools->>B: show(issue_id)／comment(issue_id, note, actor=member.bd_actor)
+        else propose_breakdown／complete_issue／escalate_to_human／submit_review
+          Tools->>Tools: 申告を RunSession に積むだけ（beads には書かない。起票・close・質問起票は呼び手 D09-f）
+        end
+        Tools-->>Crew: 戻り値（文字列）
+      end
+    end
+  end
+
+  Crew-->>Svc: CrewOutput（TaskOutput）または例外
+  Svc->>Svc: 翻訳（P5D-033）: crewai.events.__all__ の BaseEvent 派生 103 クラスを scoped_handlers で購読し、event_allowlist（実クラス名 10 件・完全一致）に当たるものだけ CrewEvent（kind・at・detail）へ。<br/>一覧に無い出来事は器に載せず件数と名前を記録に残す（落とさない＝ SD-18）。ハンドラは別スレッドで走るので積む操作はロックの中で行い、kickoff の後に flush() で待つ（SD-19）。crewai 例外 → ExecutorFailure<br/>RunSession の申告（proposal／completed／escalate／review）と written outcomes を CrewOutcome に詰める
+  alt crewai 例外（構築失敗・実行時エラー）
+    Svc-->>CE: ExecutorFailure（原因文字列。crewai 型を外に出さない）
+  else
+    Svc-->>CE: CrewOutcome（proposal｜task_output｜review_verdict｜escalation・written・events・halted・halted_reason）
+  end

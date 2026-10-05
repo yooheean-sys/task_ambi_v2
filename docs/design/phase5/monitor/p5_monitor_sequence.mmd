@@ -1,0 +1,60 @@
+%% monitor（BC-05 実行監視）内部シーケンス 主図 — 1 kickoff: begin → LLM 呼び出しごとの Hook（計測・上限停止）→ finish（検出・等級・封筒・bd 写像・確認読取）— task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-38〜43（提供）・IF-03/08/15/18/20/22（利用）／p2_sequence_UC-12-13.mmd／付録 AI 制御 §3.1〜3.3／D04-b／D06-g,i,k／FN-40〜45／PoC crewai_ai_control probe/p1,p2/interceptor.py（Z-1〜Z-6）・probe/lib/listener.py（読取のみ）
+%% レーン規約（D11-c／P5D-003）: 呼び手＝Protocol 名（RunMonitor は orchestrator から、LLMHttpHook は executor が組んだ httpx transport から）／自 MOD 内部＝ファイル単位／利用先＝Protocol 名。kernel（CorrelationContext・LoggerFactory）は Note のみ
+sequenceDiagram
+  autonumber
+  participant RM as RunMonitor
+  participant HK as LLMHttpHook
+  participant Svc as monitor/service.py<br/>（MonitorService＝RunMonitor の実装。検出・等級・写像）
+  participant Repo as monitor/repository.py<br/>（HttpHook＝LLMHttpHook の実装。httpx transport 層の計測・停止）
+  participant BR as BoardReader
+  participant BW as BoardWriter
+
+  RM->>Svc: begin(kickoff_id, limits: LimitPolicy, threshold_T)
+  Svc->>Svc: RunState（進行中の 1 kickoff）を開始: kickoff_id・limits・T・Measurement 0・failures 空・correlation_id（CorrelationContext.current() を控える）
+  alt 既に進行中の RunState がある（single-flight 違反）
+    Svc->>Svc: 旧 RunState を「帰属不明で打切り」として構造化ログに残し、新 RunState に差替える（止めない P5D-024）
+  end
+  Svc->>Repo: attach(RunState)（Hook が帰属させる先。P5D-021）
+  Svc-->>RM: None
+
+  loop LLM 呼び出しごと（executor の httpx client → transport → Hook）
+    HK->>Repo: on_outbound(request)（同期。aon_outbound も同内容 Z-4）
+    Repo->>Repo: requests += 1／messages の送信前トークンを推定（TokenEstimator ▲）／ヘッダは名前のみ記録・値は残さない
+    alt tokens_before_send > T ／ requests > max_requests ／ cost_cumulative > max_cost
+      Repo->>Repo: Measurement.halted_reason を記録、failures に F（ctx_exceeded | limit_requests | limit_cost）を積む
+      Repo-->>HK: raise RunHalted（BaseException 直系。送信しない。SDK・CrewAI のリトライを素通り Z-6）
+    else
+      Repo-->>HK: request（そのまま送信へ）
+      HK->>Repo: on_inbound(response)
+      Repo->>Repo: usage（prompt/completion tokens・cost）を加算。text/event-stream は読まない。usage 欠落 → I（usage_missing）／finish_reason=length → W（finish_length）
+      Repo-->>HK: response
+    end
+    Note over Repo: 上限判定の**後**に messages[-1] を truncation_phrases と（両辺 strip して）完全一致照合し、一致すれば truncated_answer を積む（**止めない**＝ SD-01）。CorrelationContext.current() が begin 時の ID と食い違えば警告ログ（M1 の contextvar 貫通実測の材料）。RunState が無い（begin 前／finish 後）呼び出しは「帰属不明」枠に計測し警告（止めない）
+  end
+
+  RM->>Svc: finish(kickoff_id, issue_id, actor, outcome: CrewOutcome)
+  Svc->>Repo: detach() → Measurement（確定値）
+  Svc->>Svc: 検出（monitor-F08）: Hook の failures（送信前・応答の 2 観測点）／halted_reason（フック側が正）<br/>／outcome.events（EVENT_RULES で写す。completed で裏を取る＝ api_exhausted・guardrail_limit・retry_succeeded・summarization。同じ種類の 2 回発火は重複排除）<br/>／outcome.proposal の有無（structured_conversion）<br/>／outcome.task_output（no_output のみ。「定型のみ」は語彙不在で未実装＝ SD-15）
+  Svc->>Svc: 等級付け（monitor-F09）: config.json の kind→grade 写像で F/W/I。最重の等級を RunVerdict.grade に<br/>封筒＝[monitor] マーカー＋grade＋kind＋evidence（実測値）＋kickoff_id（P5D-023）
+  alt F（失敗）
+    Svc->>BW: comment(issue_id, 封筒, actor)（先に証拠を残す P5D-024）
+    Svc->>BW: set_labels(issue_id, add=[state:failing], remove=[state:working], actor)
+    Svc->>BW: release(issue_id, actor)（close しない）
+    Svc->>BR: show(issue_id) → labels に state:failing・assignee 空（未設定・空文字・空白のみ）を確認
+    Svc->>BR: comments(issue_id) → 新しい方から遡って最初の印付きコメントを採り kickoff_id の一致まで確認（SD-13）
+  else W（警告付き成功）
+    Svc->>BW: comment(issue_id, 封筒, actor)
+    Svc->>BW: close(issue_id, reason=封筒の要約, actor)
+    Svc->>BR: show(issue_id) → status=closed を確認
+    Svc->>BR: comments(issue_id) → 同（遡り照合 ＋ kickoff_id の一致）
+  else I（情報）または失敗なし
+    Svc->>Svc: bd には書かない。RunVerdict.envelope に I の付記（実行履歴へは呼び手経由）
+  end
+  Note over Svc,BW: 写像の途中で BoardUnavailable／IssueNotFound を受けたら以後の手を打ち切るが、**確認読取は試みる**（読めなければ受けた例外の名前を actual に載せる＝ FR-053a）。打ち切りがあれば一致しても必ず停止する
+  alt 確認読取が一致しない／打ち切りがあった／読み直しが失敗した
+    Svc->>Svc: 構造化ログに停止痕跡（kickoff_id・issue_id・封筒・不達理由・correlation_id）
+    Svc-->>RM: raise MappingUnverified（黙って進まない P3。呼び手が停止）
+  else
+    Svc-->>RM: RunVerdict（grade・kinds・halted・closed（W なら True）・envelope・measurement・failures）
+  end

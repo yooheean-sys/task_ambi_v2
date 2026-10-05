@@ -1,0 +1,7 @@
+{
+  "max_returns": 4,
+  "recent_results_n": 20,
+  "system_actor": "system",
+  "comment_marker": "[orchestrator]",
+  "review_persona": "planner"
+}

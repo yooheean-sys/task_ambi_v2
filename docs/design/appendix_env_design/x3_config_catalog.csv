@@ -1,0 +1,92 @@
+cfg_id,キー名,配置先(a/b/c),利用モジュール(MOD),型,既定値,必須/任意,秘密情報か(Y/N),説明,上書き可能な階層
+CFG-01,LLM_API_KEY_<PROFILE>,a,executor,str（SecretStr）,—,任意（プロファイルが api_key_ref で参照するとき必須。ローカル LLM は空可 EIF-03）,Y,LLM プロファイルごとの API キー。<PROFILE>＝global/llm_profiles.yaml の name を大文字化（^[A-Z][A-Z0-9_]*$。D15-g）。実値は executor.LlmFactory だけが読む（P5D-030）。欠け→ExecutorFailure(build)（executor-F02。黙って not_set にしない）。ログ・例外・UI は参照名のみ（D15-i）,⑥→⑦
+CFG-02,LLM_API_KEY_OPENROUTER,a,executor,str（SecretStr）,—,任意,Y,例: プロファイル openrouter 用（.env.example の代表行）,⑥→⑦
+CFG-03,LLM_API_KEY_LOCAL,a,executor,str（SecretStr）,（空）,任意,Y,例: ローカル llama-server 用。空のままでよい（EIF-03「ローカル LLM は空でも可」）,⑥→⑦
+CFG-04,VAULT_ROOT,b,vault,path（絶対）,—,必須,N,Obsidian vault のルート（/mnt/c/… drvfs）。vault だけが読む（P5D-009）。領域 A の folders・FileRef はこれに相対。未設定・不在→起動中断（vault-F10）,⑥→⑦
+CFG-05,SETTINGS_ROOT,b,settings,path（絶対）,—,必須,N,設定ファイル領域 A のルート（P5D-015）。不在なら global/ の雛形を生成。未設定→起動中断（settings-F23）,⑥→⑦
+CFG-06,TRIGGER_ROOT,b,trigger,path（絶対）,—,必須,N,設定ファイル領域 B のルート（triggers.yaml・history/。P5D-040）。未設定・不正→起動中断（trigger-F13）,⑥→⑦
+CFG-07,BEADS_DIR,b,board,path（絶対）,—,必須,N,.beads ディレクトリ自身の絶対パス（直下に config.yaml がある。bd の公約に合わせる D19-a）。「.beads を持つ親」ではない。board だけが読み bd には env で渡す（cwd 非依存 D19-c）。旧 board/config.json の beads_dir を .env へ移設（D15-d）。不在または config.yaml が無い→起動中断（board-F17）,⑥→⑦
+CFG-08,BD_BIN,b,board,str（コマンド名または絶対パス）,bd,任意,N,bd 実行ファイル。systemd 下は PATH が最小なので絶対パス推奨。旧 board/config.json の bd_bin を .env へ移設（D15-d）,①→⑥→⑦
+CFG-09,DOWNLOADS_DIR,b,trigger,path（絶対）,—,任意（file トリガーを使うとき必須）,N,Windows の DL フォルダ（/mnt/c/Users/<user>/Downloads）。triggers.yaml の file トリガー watch_dir はこれに相対（既定 .・外縁検査。D15-e）。未設定のまま file トリガーを保存→validate 拒否（trigger-F05）,⑥→⑦
+CFG-10,APP_HOST,b,apps/api,str（IP／ホスト名）,127.0.0.1,任意,N,uvicorn の bind アドレス。localhost bind（EIF-10/11。憲章 §10 認証認可は対象外）,①→⑥→⑦
+CFG-11,APP_PORT,b,apps/api;ui,int,8000,任意,N,app の待受ポート（p6 記号 APP_PORT・openapi servers の {APP_PORT}）。apps/api が .env から読み uvicorn に渡す（app ユニットに EnvironmentFile= は不要。D15-f）,①→⑥→⑦
+CFG-12,APP_BASE_URL,b,ui,url,http://{APP_HOST}:{APP_PORT}（導出）,任意,N,app プロセス内の UI ページ（apps/ui が束ねる NiceGUI の画面）が app の HTTP API を叩く base URL（EIF-10）。省略時は APP_HOST／APP_PORT から導出（D15-f）。016 で UI は app と同じプロセス・同じ待受に同居したため（憲章 2.0.0 §4・D23-e／D23-f）、読み手は別プロセスの Streamlit ではなく app プロセス内の apps/ui である,①→⑥→⑦
+CFG-13,UI_PORT,b,ui,int,8501,廃止済み（D23）,N,廃止済み（016・D23-e）。UI は app と同じプロセス・同じ待受の /ui に同居するので（憲章 2.0.0 §4）UI 専用の待受ポートは無く、.env からキーを削った。接続先は CFG-10 APP_HOST／CFG-11 APP_PORT に載る。旧: Streamlit の待受ポート（p6 記号 UI_PORT）。Streamlit は起動引数でしか受けないため ui ユニットだけ EnvironmentFile=<repo>/.env を併用し --server.port ${UI_PORT} で渡していた（憲章 §5「必要な場合のみ」。D15-f）。行は採番規約（欠番不埋め）により残す,①→⑥→⑦
+CFG-14,root.app_name,c1,apps/api;ui,str,task_ambi,必須,N,アプリ名（憲章 §5 ルート config.json）。ui の画面題にも使う,②
+CFG-15,root.env_label,c1,apps/api;common,str,dev,必須,N,環境ラベル（ログの共通項目に載せる）。統合テストは build() 引数で test に差し替え（D15-l）,②→⑧
+CFG-16,root.log.level,c1,common,str（DEBUG|INFO|WARNING|ERROR）,INFO,任意,N,構造化ログのレベル（憲章 §6）。crewai／litellm／httpx のロガは常に WARNING 以上（D15-i (2)）,②→⑧
+CFG-17,root.log.format,c1,common,str（json|text）,json,任意,N,構造化ログの形式（stdout→journald）,②→⑧
+CFG-18,root.log.correlation_header,c1,common;apps/api,str,X-Correlation-ID,任意,N,correlation ID の HTTP ヘッダ名（憲章 §5・§6。発番はミドルウェア REV-11）,②
+CFG-19,root.log.redact_keys,c1,common,list[str],"[""*_API_KEY*"",""Authorization"",""api_key""]",任意,N,LoggerFactory のマスクフィルタが値を伏字にするキー名パターン（D15-i (2)）。削って秘密を出す方向の変更はレビュー対象,②
+CFG-20,root.enabled_modules,c1,apps/api;ui,list[str],"[board,vault,settings,monitor,stages,executor,orchestrator,trigger,repo]",必須,N,有効化するモジュール一覧（憲章 §5）。apps/api の build 連鎖の範囲を決め（D14-e）、ui は表示するページの選別に使う（D15-f）。統合テストは build() 引数で差し替え。既定値の 9 モジュール全列挙は完成形の姿であり、初期値は空で、モジュール追加ごとに追記する（9 つ目の repo は D25）,②→⑧
+CFG-21,root.defaults.encoding,c1,common,str,utf-8,任意,N,複数モジュール共通の既定値の例（憲章 §5）。MOD config.json の同名キー（vault.encoding）が優先,②→③
+CFG-22,board.timeout_sec,c1,board,int（秒）,120,任意,N,bd 1 呼び出しのタイムアウト（EIF-01。超過→BoardUnavailable）,①→③→⑧
+CFG-23,board.lock_wait_max_attempts,c1,board,int,3,任意,N,bd ロック競合の待ち再実行回数（P5D-004。憲章 §10 注記 PATCH-8）,①→③→⑧
+CFG-24,board.lock_wait_base_sec,c1,board,float（秒）,0.5,任意,N,ロック待ちの基底間隔（P5D-004）,①→③→⑧
+CFG-25,board.lock_hints,c1,board,list[str],"[lock,locked,busy,…]",任意,N,bd の stderr をロック競合と判定する文言（board-F01）,①→③
+CFG-26,board.list_limit_none,c1,board,bool,true,任意,N,bd list に -n 0 を付けて全件取得（board data_model）,①→③
+CFG-27,vault.forbidden_chars,c1,vault,list[str],"[\ / : * ? "" < > | ＋制御文字]",任意,N,ファイル名の禁止文字（Windows FS。P5D-010）,①→③
+CFG-28,vault.forbidden_obsidian,c1,vault,list[str],[# ^ [ ] | %%],任意,N,Obsidian のリンク・見出しで壊れる文字（付録 OB）。5 種は Obsidian 1.12.7 の警告集合 HT と完全一致（M-22・M-23）。%% はコメント記法で HT には含まれないが公式ヘルプがリンクを壊す例に挙げるため足す（FR-055・M-21・M-24）。要素は複数文字の並びを取れる,①→③
+CFG-29,vault.reserved_names,c1,vault,list[str],"[CON,PRN,AUX,NUL,COM1-9,LPT1-9]",任意,N,Windows 予約名,①→③
+CFG-30,vault.forbid_trailing_dot_space,c1,vault,bool,true,任意,N,末尾のドット・空白を禁止,①→③
+CFG-31,vault.max_filename_bytes,c1,vault,int,200,任意,N,ファイル名の上限バイト,①→③
+CFG-32,vault.max_outcome_bytes,c1,vault,int,1048576（1MiB）,任意,N,outcome 1 ファイルの上限,①→③→⑧
+CFG-33,vault.archive_dir,c1,vault,str,_archive,任意,N,上書き時の退避先フォルダ名（EIF-02）,①→③
+CFG-34,vault.list_exclude_prefixes,c1,vault,list[str],[.],任意,N,一覧から除く接頭辞。退避先名は CFG-33 archive_dir から導出を受けるので二重に持たない（DIFF-09）。既定の . は名前ゲートのドット始まり拒否と一時ファイル .vaulttmp-* の除外も担う,①→③
+CFG-35,vault.encoding,c1,vault,str|None,None,任意,N,読み書きの文字コード。未指定（None）なら CFG-21 root.defaults.encoding を継承し実効値を build() が解決する（実効値 utf-8）。値を書けばルート既定を上書きする,①→②→③
+CFG-36,settings.key_forbidden_chars,c1,settings,list[str],[. / \ : 空白],任意,N,project_key 等のキーに使えない文字（settings-F12）,①→③
+CFG-37,settings.context_reserve_tokens,c1,settings;monitor,int,（出荷時既定。P5D-013）,任意,N,threshold_T＝context_window − 本値（D06-g・P5D-013）,①→③
+CFG-38,settings.llm_presets,c1,settings,list[object],OpenRouter／ローカルの base_url 雛形,任意,N,UI の新規プロファイル入力の雛形（settings-F13）。api_key の実値は持たない,①→③
+CFG-39,settings.limits_defaults,c1,settings,object（LimitPolicy）,出荷時既定,任意,N,global/limits.yaml 不在時の既定（settings-F04）。④⑤が上書き,①→③→④→⑤
+CFG-40,settings.system_actor,c1,settings,str,（orchestrator.system_actor と同値）,必須,N,台帳が「システム」として知る bd actor（P5D-037。orchestrator/config.json と同名・同値。selfcheck／起動時に一致を検査する要求を M1 へ）,①→③
+CFG-41,monitor.grade_map,c1,monitor,"dict[FailureKind,Grade]",付録 §3.2(b)（P5D-020）,任意,N,失敗種別→等級 F/W/I の写像,①→③
+CFG-42,monitor.envelope_marker,c1,monitor,str,[monitor],任意,N,bd コメントの封筒印（P5D-023）,①→③
+CFG-43,monitor.token_estimator,c1,monitor,str（tiktoken|chars）,tiktoken（無ければ chars）,任意,N,送信前トークン推定の方式（monitor-F05 ▲未実測）,①→③→⑧
+CFG-44,monitor.token_encoding,c1,monitor,str,cl100k_base,任意,N,tiktoken のエンコーディング名,①→③
+CFG-45,monitor.cost_field_path,c1,monitor,str,usage.cost,任意,N,応答 JSON からコストを読む経路（OpenRouter 形式）,①→③
+CFG-46,monitor.truncation_phrases,c1,monitor,list[str],（強制最終回答の照合文言）,任意,N,finish_length の W 級判定に使う文言,①→③
+CFG-47,stages.min_items_override,c1,stages,"dict[StageName,int]",{}（全段 1）,任意,N,段ごとの MIN_ITEMS 上書き（stages-F03）,①→③→⑧
+CFG-48,stages.min_acceptance_len,c1,stages,int,10,任意,N,受け入れ条件の最小文字数（PoC 書式 P5D-025）,①→③
+CFG-49,stages.placeholder_patterns,c1,stages,list[str],（プレースホルダ文言）,任意,N,受け入れ条件のプレースホルダ検出（stages-F06）,①→③
+CFG-50,stages.max_acceptance_default,c1,stages,int,（出荷時既定）,任意,N,受け入れ条件の既定上限数,①→③
+CFG-51,executor.run_command_timeout_sec,c1,executor,int（秒）,（出荷時既定）,任意,N,run_command Tool の subprocess タイムアウト（executor-F09）,①→③→⑧
+CFG-52,executor.max_iter,c1,executor,int,20（CrewAI Agent 既定）,任意,N,Agent.max_iter の既定。agents.yaml の同名フィールドが優先（④⑤。D16-h で確定）,①→③→④→⑤
+CFG-53,executor.max_rpm,c1,executor,int|null,null（CrewAI Agent 既定）,任意,N,Agent.max_rpm の既定。agents.yaml が優先（④⑤。D16-h で確定）,①→③→④→⑤
+CFG-54,executor.event_allowlist,c1,executor,list[str],"[LLMCall*,ToolUsage*,guardrail,agent retry,summarization,crew completed/failed]",任意,N,CrewEvent に翻訳するイベント名（executor-F11）,①→③
+CFG-55,executor.hook_catalog,c1,executor,list[str],（登録可能な hook 名）,任意,N,hooks.yaml が参照できる hook 名の集合（executor-F10・P5D-032）,①→③
+CFG-56,executor.disable_crewai_telemetry,c1,executor,bool,true,任意,N,build 時に CREWAI_DISABLE_TELEMETRY／OTEL_SDK_DISABLED を os.environ に setdefault（PoC 継承。D15-m。p5 data_model 転記済み D16。.env には置かない＝秘密でも環境依存でもない）,①→③
+CFG-57,orchestrator.max_returns,c1,orchestrator,int,（PoC 準拠 P5D-038）,任意,N,差し戻し上限,①→③→⑧
+CFG-58,orchestrator.recent_results_n,c1,orchestrator,int,（P5D-035）,任意,N,GET /kickoffs の保持件数,①→③
+CFG-59,orchestrator.system_actor,c1,orchestrator,str,（settings.system_actor と同値）,必須,N,claim／release／回収コメントの bd actor（P5D-037）,①→③
+CFG-60,orchestrator.comment_marker,c1,orchestrator,str,[orchestrator],任意,N,bd コメントの印,①→③
+CFG-61,orchestrator.review_persona,c1,orchestrator,str（PersonaKey）,planner,任意,N,レビュー段のペルソナ,①→③
+CFG-62,trigger.ready_interval_default_sec,c1,trigger,int（秒）,（D06-j(1)）,任意,N,既定トリガー（ready 巡回）の初期間隔。triggers.yaml 生成時に使う,①→③
+CFG-63,trigger.min_interval_sec,c1,trigger,int（秒）,（出荷時既定）,任意,N,interval トリガーの下限（validate）,①→③
+CFG-64,trigger.misfire_grace_sec,c1,trigger,int（秒）,（出荷時既定）,任意,N,APScheduler の misfire 猶予,①→③
+CFG-65,trigger.poll_interval_sec,c1,trigger,float（秒）,（R12-P4 で調整）,任意,N,watchdog PollingObserver の間隔（/mnt/c）,①→③→⑧
+CFG-66,trigger.stable_seconds,c1,trigger,int（秒）,（出荷時既定）,任意,N,ファイル投下の完了検知（サイズ・mtime 安定。X7）,①→③→⑧
+CFG-67,trigger.watcher_enabled,c1,trigger,bool,true,任意,N,false で退避経路 EIF-12（P5D-042）。統合テストは build() 引数で差し替え,①→③→⑧
+CFG-68,trigger.timezone,c1,trigger,str（IANA）|null,null（システムローカル）,任意,N,cron トリガーの解釈タイムゾーン（D15-m。p5 data_model 転記済み D16）,①→③
+CFG-69,<SETTINGS_ROOT>/global/agents.yaml,c2,settings（読み手: orchestrator→stages・executor）,AgentsGlobalYaml（CrewAI Agent フィールド。許可 10: role／goal／backstory（必須）／llm／tools／skills／mcps／max_iter／max_rpm／max_execution_time。D16-d）,雛形（初回ロードで生成）,必須,N,ペルソナ既定（キー＝PersonaKey）。llm＝llm_profiles.yaml の name、tools＝ToolName 列挙（kernel。D16-b）。旧 global/roles/<persona>.md の本文は backstory に吸収。出荷時既定は settings/defaults/agents.yaml（D16-g）。UI（UC-07）で編集・commit しない（D15-j・憲章 §2 例外 (a)）,④→⑤
+CFG-70,<SETTINGS_ROOT>/projects/<key>/agents.yaml,c2,settings,AgentsYaml（同フィールド全て任意。キーの存在＝メンバ・空 dict 可。D16-d）,—,PJ ごと必須（メンバ 0 可）,N,PJ メンバ（キー＝PersonaKey＝旧 members.yaml の行）。global をフィールド単位 merge（リスト型 tools/skills/mcps は丸ごと置換 D16-d）。メンバ ID は <project>.<persona>（D06-b）。P5D-015 の members.yaml を置換（D16）,⑤（④を上書き）
+CFG-71,<SETTINGS_ROOT>/global/tasks.yaml,c2,settings（読み手: orchestrator→stages）,TasksGlobalYaml（CrewAI Task フィールド。許可 4: description／expected_output（必須）／agent／tools。D16-f）,出荷時既定（旧 stages/prompts/ のコード定数 P5D-028 を移す）,必須,N,7 キー（program／project／subrequest／child／plain／review_normal／review_final D16-a）のテンプレート。{変数} は kickoff 時にシステムが埋める（許可 15＋段別必須の validate D16-c）。review_* の tools: [submit_review] が Task.tools（Agent.tools を上書き）。ゲート論理（MIN_ITEMS・受け入れ条件検査）はコードのまま。出荷時既定は settings/defaults/tasks.yaml（旧 stages/prompts/ 相当 D16-g）。UI で編集,④→⑤
+CFG-72,<SETTINGS_ROOT>/projects/<key>/tasks.yaml,c2,settings,TasksYaml（同上。キー単位の丸ごと上書き）,—,任意,N,PJ ごとの段テンプレート上書き（キー＝段名。任意・UC-08 登録時に生成しない D16-h）,⑤（④を上書き）
+CFG-73,<SETTINGS_ROOT>/projects/<key>/project.yaml,c2,settings,ProjectYaml（project_key／name／is_reserved／folders）,—,PJ ごと必須,N,PJ 定義。folders（pj_input_dir／role_dirs／outcome_dir）は VAULT_ROOT 相対（P5D-009。決定例「obsidian フォルダからの相対パス」）。_program は予約 PJ,⑤
+CFG-74,<SETTINGS_ROOT>/projects/<key>/project.yaml#repos,c2,settings（読み手: orchestrator→stages）,object（remote_url: url／local_path: path）,—,任意（未登録可。未登録なら `repos` キー自体を省略）,N,プロジェクトのリポジトリ対応付け（D24 で据え置き解除＝R-13-c・D02-b「次 ver 候補」の実装）。形式のみの緩い検査（実在・git アクセス可否は見ない）。値は ContextRefs 経由で段テンプレートの {repository_remote_url}・{repository_local_path} に充填され、未登録のプロジェクトでは空文字になる。git 操作ツールは未実装（将来 feature）。PAT は (a) に <MOD>_ 接頭で,⑤
+CFG-75,<SETTINGS_ROOT>/projects/<key>/policy.csv,c2,settings（Authorizer）,PolicyCsv（casbin 公約形式）,—,PJ ごと必須,N,権限（tool:<name> execute・vault 到達）。主体 member:<id>。agents.yaml の tools（装備）とは別の「許可」層（フェイルクローズ P5D-032）,⑤
+CFG-76,<SETTINGS_ROOT>/global/model.conf,c2,settings,ModelConf（casbin）,雛形,必須,N,casbin モデル（全 PJ 共通）,④
+CFG-77,<SETTINGS_ROOT>/global/llm_profiles.yaml,c2,settings（executor が LLM 構築）,LlmProfilesYaml（DM-11: name／provider_kind／base_url／model_id／context_window／api_key_ref／extra_headers＋default）,雛形（settings.llm_presets から）,必須,N,LLM プロファイル。base_url・model_id はここ（DEC-006／019）、api_key_ref は LLM_API_KEY_<PROFILE>（D15-g）。api_key の実値フィールドは持たない（validate が拒否 D15-i (5)）。統合テストは一時 SETTINGS_ROOT に偽サーバ向けを書く（D15-l）,④→⑤（agents.yaml の llm で選択）
+CFG-78,<SETTINGS_ROOT>/global/limits.yaml,c2,settings（monitor が使う）,LimitsYaml（global／overrides[project_key]）,settings.limits_defaults,任意,N,回数・コスト上限。global＋PJ 上書き（D06-g・settings-F04）。共通化したいときは global だけに書く,③→④→⑤
+CFG-79,<SETTINGS_ROOT>/global/commands.yaml,c2,settings（CommandRegistry）,CommandsYaml（name→argv）,雛形,任意,N,run_command の固定 argv（D07-e・DM-26。vault 外で Tool 到達不能）。tools.yaml は置かない（D15-j）ので維持,④
+CFG-80,<SETTINGS_ROOT>/projects/<key>/hooks.yaml,c2,settings（executor が登録）,HooksYaml（DM-06: name／points／agents）,—,任意,N,hook 名は executor.hook_catalog の集合から（executor-F10）,⑤
+CFG-81,<SETTINGS_ROOT>/global/humans.yaml,c2,settings,HumansYaml（human_actors）,—,必須,N,人間 actor の宣言（P5D-019）,④
+CFG-82,<SETTINGS_ROOT>/projects/<key>/rules.md,c2,settings（stages が合成）,markdown,—,任意,N,PJ 共通ルール（backstory に合成。D06-e）。維持,⑤
+CFG-83,<SETTINGS_ROOT>/global/roles/<persona>.md,c2,settings,markdown,—,廃止済み（D16）,N,役割ルール。P5-R1（D16）で global/agents.yaml の backstory に吸収し廃止。行は採番規約（欠番不埋め）により残す,④（廃止予定）
+CFG-84,<TRIGGER_ROOT>/triggers.yaml,c2,trigger,TriggersYaml（DM-22 TriggerDef／DM-23 LaunchCond）,既定トリガー ready 巡回（削除不可）,必須（不在なら生成）,N,トリガー定義。file トリガーの watch_dir は DOWNLOADS_DIR 相対（既定 .・外縁検査。D15-e）。UI（UC-09）で CRUD・commit しない,単層（PJ 階層なし）
+CFG-85,<TRIGGER_ROOT>/history/history_YYYYMM.csv,c2,trigger,HistoryCsv（P5D-039）,—,自動生成（追記のみ）,N,実行履歴。設定ではなく記録（憲章 §2 例外 (b)）。置き場の記録として載せる。人間が消す,—
+CFG-86,repo.max_read_bytes,c1,repo,int,262144（256KiB）,任意,N,リポジトリのファイル読取の上限（超過は too_large。LLM へ渡す量を抑える。D25-a）,①→③→⑧
+CFG-87,repo.max_write_bytes,c1,repo,int,1048576（1MiB）,任意,N,リポジトリのファイル書込の上限（D25-a）,①→③→⑧
+CFG-88,repo.max_list_entries,c1,repo,int,2000,任意,N,一覧の上限件数（超過は too_large。subdir で絞らせる。D25-a）,①→③→⑧
+CFG-89,repo.excluded_dirs,c1,repo,list[str],"[.git,.venv,node_modules,__pycache__,.pytest_cache,.ruff_cache]",任意,N,一覧で降りずに刈り込むディレクトリ名。.git は設定に関わらず常に刈り込む（D25-a）,①→③→⑧
+CFG-90,repo.deny_patterns,c1,repo,list[str],"[.env,.env.*,*.pem,*.key,id_rsa*,id_ed25519*]",任意,N,読み書き・一覧を拒む名前（fnmatch・パスの構成要素ごと）。秘密を LLM に送らない（D25-a）,①→③→⑧
+CFG-91,repo.encoding,c1,repo,str|None,None,任意,N,読み書きの文字コード。未指定（None）なら CFG-21 root.defaults.encoding を継承する（vault の CFG-35 と同じ解決。D25-a）,①→②→③→⑧

@@ -1,0 +1,41 @@
+%% コンテキスト図（C4 Level 1 相当）— task_ambi_v4
+%% 裁定: 設計判断_V4-D02（Q1 スコープ / Q2 外部システム）
+%% - システム境界 = 「2. やりたいこと」全項目 − §6-3（V4 到達点全体）
+%% - GitLab は次 ver 候補のため描かない（作業メモ）
+%% - タイマ（APScheduler）はシステム内部の常駐機能なので外部要素にしない
+%% - LLM API は 1 箱に 2 実体: OpenRouter（既定 qwen/qwen3.7-plus）とローカル llama.cpp（localhost:11434/v1）
+%% - beads-ui は beads と別箱（人間のエスカレーション回答動線を見せるため）
+%% - Boundary は配置のためのグルーピング（WSL2 / Windows 側 / 外部サービス）であり、モジュール境界ではない
+%% 各要素の詳細説明は 05_function_memo.md §0 を参照（図内は短文に留める）
+C4Context
+  title システムコンテキスト図: task_ambi_v4
+
+  Person(me, "自分", "単一利用者。複数プロジェクトを統括")
+
+  Enterprise_Boundary(b_wsl, "WSL2 (Ubuntu 24.04)") {
+    System(sys, "task_ambi_v4", "階層 AI 組織を beads で駆動する個人作業効率化システム（モジュラーモノリス）")
+    System_Ext(beads, "beads", "bd CLI / Dolt。盤面の正")
+    System_Ext(beadsui, "beads-ui", "beads の Web UI")
+  }
+
+  Boundary(b_win, "Windows 側", "/mnt/c 経由") {
+    System_Ext(vault, "Obsidian vault", "Markdown 群。入力と outcome/ 出力")
+    System_Ext(dlfolder, "ダウンロードフォルダ", "ファイル投下の監視対象")
+  }
+
+  Boundary(b_ext, "外部サービス", "ネットワーク越し / ローカルサーバ") {
+    System_Ext(llm, "LLM API", "OpenAI 互換。OpenRouter / ローカル llama.cpp")
+  }
+
+  Rel(me, sys, "設定 CRUD・トリガー管理・状態閲覧", "Streamlit")
+  Rel(me, beads, "起票・コメント・close", "bd CLI")
+  Rel(me, beadsui, "エスカレーション回答・盤面閲覧", "ブラウザ")
+  Rel(me, vault, "メモ執筆・成果物閲覧", "Obsidian")
+
+  Rel(sys, beads, "claim / create / dep add / comment / close", "bd CLI (subprocess)")
+  Rel(beadsui, beads, "読み書き", "内部")
+  Rel(sys, vault, "コンテキスト読取 / outcome/ 書込", "ファイル I/O")
+  Rel(sys, llm, "推論要求（送信前トークン計測付き）", "HTTP(S)")
+  Rel(dlfolder, sys, "ファイル投下イベント", "watchdog PollingObserver")
+
+  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")

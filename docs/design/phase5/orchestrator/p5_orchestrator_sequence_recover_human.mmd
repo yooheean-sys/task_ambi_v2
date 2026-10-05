@@ -1,0 +1,39 @@
+%% orchestrator 内部シーケンス 副図 — 起動時回収 recover_orphans（盤面導出の二重ガード D01）と human 起動 POST /kickoffs（router）— task_ambi_v4 第5フェーズ
+%% 出典: p2_sequence_UC-11.mmd 28-39／D01-b,c／D08-e／D09-e／FN-38／P5D-034〜036／PoC loop.py（recover_orphans・RECOVER_MARKER）
+sequenceDiagram
+  autonumber
+  actor Me as 自分
+  participant R as orchestrator/router.py<br/>（POST /kickoffs・GET /kickoffs/{id}・GET /kickoffs/current）
+  participant Svc as orchestrator/service.py
+  participant B as BoardReader／BoardWriter
+
+  Me->>R: POST /kickoffs {claim_filter 任意}
+  R->>R: 入口の correlation_id を読む（土台のミドルウェアが束縛済み。ここでは bind しない）、ctx＝ExecutionContext(kind=human, trigger_snapshot=None, claim_filter)
+  R->>Svc: start_background(ctx, correlation_id)（同期契約をスレッド化するのは呼び側 D09-e）
+  Note over R,Svc: 相関 ID は**入口の値をワーカースレッドへ引き継ぐ**（内側で束縛 → 抜けるときに戻す。現在値が無ければ束縛しない）
+  alt single-flight 中
+    R-->>Me: 409 {detail, current_kickoff_id}（**断りの記録は積まない**。識別子も発番しない FR-012a）
+  else
+    R-->>Me: 202 {kickoff_id, status: running}
+  end
+  Me->>R: GET /kickoffs/{id}
+  R->>Svc: lookup(kickoff_id)（直近 N 件のインメモリ KickoffRecord。再起動で消える）
+  R-->>Me: 200 {kickoff_id, status: running|done, ctx: 実行文脈の写し, result: KickoffResult|None}（知らない id は 404）
+  Me->>R: GET /kickoffs/current
+  R-->>Me: 200 {running: true, record} ／ 走っていなければ **200 {running=false, record: null}**（空の応答にしない＝ DIFF-10）
+
+  Note over Svc,B: recover_orphans（run の冒頭。FN-38・D01）
+  Svc->>B: list_working(claim_filter)（state:working の残骸。claim 解放されず静かに滞留したもの）
+  loop 残骸ごと
+    Svc->>B: open_question_of(issue_id)
+    alt 未回答の質問待ち
+      Svc->>Svc: 触らない（crash window 用ガード D04-c）
+    else
+      Svc->>B: children_of(issue_id)
+      alt 子が既にいる（部分起票の疑い）
+        Svc->>B: comment(issue_id, "[orchestrator] 回収: 子が既に存在 (ids)。自動再投入しない")→ set_labels(+state:failing, −state:working) → release（人間へ渡す統一経路 P5D-034。D01-b）
+      else 純粋な残骸
+        Svc->>B: comment(issue_id, "[orchestrator] 回収: 前回の実行が異常終了")→ release（state:working を外し ready に戻す。次の claim で再投入）
+      end
+    end
+  end

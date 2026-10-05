@@ -1,0 +1,147 @@
+%% monitor（BC-05 実行監視）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p2_domain_model.mmd DM-20/21／p4_module_contract.csv IF-38〜43／p4 notes §2（受け渡し型 monitor.py: RunVerdict・Measurement・例外 RunHalted ＋本フェーズで FailureEvent・Grade・FailureKind・MappingUnverified を追記）／付録 AI 制御 §3／PoC crewai_ai_control probe（読取のみ）
+%% 記法: classDiagram。namespace common_interfaces_monitor_py＝受け渡し型／monitor_internal＝MOD 内部。外部実体なし（monitor は永続ファイルを所有しない。写像先 beads は board 経由、LLM API は観測のみ）
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+%% 裁定: P5D-020〜024（p5_decision_log.csv）
+classDiagram
+  direction LR
+
+  namespace common_interfaces_monitor_py {
+    class Grade["Grade（等級）"] {
+      <<enumeration>>
+      F
+      W
+      I
+    }
+    class FailureKind["FailureKind（失敗の種類）"] {
+      <<enumeration>>
+      api_exhausted
+      no_output
+      guardrail_limit
+      ctx_exceeded
+      limit_requests
+      limit_cost
+      truncated_answer
+      finish_length
+      structured_conversion
+      retry_succeeded
+      usage_missing
+      summarization
+    }
+    class FailureEvent["FailureEvent（DM-21）"] {
+      <<受け渡し型>>
+      +grade Grade
+      +kind FailureKind
+      +evidence dict 実測値（tokens／limit／request_no／event 名など）
+      +at 時刻
+    }
+    class Measurement["Measurement（DM-20）"] {
+      <<受け渡し型>>
+      +kickoff_id
+      +requests
+      +prompt_tokens / completion_tokens 合計
+      +cost_usd 累計（usage.cost がある応答のみ）
+      +cost_missing_count
+      +max_tokens_before_send
+      +halted_reason FailureKind | None
+      +started_at / finished_at
+      +unattributed_requests 帰属不明枠（P5D-021）
+    }
+    class RunVerdict["RunVerdict（finish の戻り）"] {
+      <<受け渡し型>>
+      +grade Grade | None 最重
+      +kinds list~FailureKind~
+      +halted bool
+      +closed bool W で monitor が close 済み
+      +envelope str 封筒本文（P5D-023）
+      +measurement Measurement
+      +failures list~FailureEvent~
+    }
+    class RunHalted["RunHalted（BaseException 直系 Z-6）"] {
+      <<exception>>
+      +kind FailureKind ctx_exceeded | limit_requests | limit_cost
+      +measured / limit
+      +request_no
+    }
+    class MappingUnverified["MappingUnverified"] {
+      <<exception>>
+      +UnverifiedError を継承
+      +issue_id / 期待した状態 / 読めた状態
+    }
+  }
+
+  namespace monitor_internal {
+    class MonitorDeps["MonitorDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +board_reader BoardReader
+      +board_writer BoardWriter
+    }
+    class MonitorHandle["MonitorHandle（build の戻り）"] {
+      <<frozen dataclass>>
+      +run_monitor RunMonitor
+      +llm_http_hook LLMHttpHook
+      +router None
+    }
+    class MonitorConfig["MonitorConfig（monitor/config.json）"] {
+      <<Settings>>
+      +grade_map dict~FailureKind,Grade~ 既定＝付録 §3.2(b)（P5D-020）
+      +envelope_marker 既定 [monitor]
+      +token_estimator 既定 chars（chars/4 の近似）| tiktoken は指定時のみ・未導入なら起動中断（SD-14）
+      +token_encoding 既定 cl100k_base
+      +cost_field_path 既定 usage.cost
+      +truncation_phrases 強制最終回答の照合文言
+    }
+    class RunState["RunState（進行中の 1 kickoff）"] {
+      <<VO>>
+      +kickoff_id
+      +limits LimitPolicy
+      +threshold_T
+      +correlation_id begin 時に控える
+      +measurement Measurement 進行中
+      +failures list~FailureEvent~
+      +lock 計測はスレッド安全に（実装は Hook が 1 本の Lock で守る＝ SD-19）
+    }
+    class Envelope["Envelope（封筒の組立）"] {
+      <<VO>>
+      +marker
+      +grade / kinds
+      +evidence 要約
+      +kickoff_id / correlation_id
+      +render() str 1 行目マーカー＋キー値
+    }
+    class DetectionRule["DetectionRule（検出規則）"] {
+      <<VO>>
+      +source outbound | inbound | events | proposal | task_output | halted
+      +match 条件（イベント名・messages[-1] の文言・finish_reason）
+      +kind FailureKind
+      +requires_incomplete 完了していないときだけ積む（events 観測点用。SD-06）
+      +dedup 同一の種類の重複排除（最初の 1 件の evidence を残す）
+    }
+  }
+
+  RunVerdict "1" *-- "1" Measurement
+  RunVerdict "1" *-- "0..*" FailureEvent
+  FailureEvent --> Grade
+  FailureEvent --> FailureKind
+  RunHalted --> FailureKind
+  RunState "1" *-- "1" Measurement
+  RunState "1" *-- "0..*" FailureEvent
+  Envelope ..> RunVerdict : envelope 本文
+  DetectionRule ..> FailureEvent : 生成
+  MonitorConfig ..> DetectionRule : 規則と等級
+  MonitorHandle ..> MonitorDeps : build
+  MonitorHandle ..> MonitorConfig : build が読む（任意引数 config で差替え可）
+
+  note for Grade "永続化先: なし（コード定数）"
+  note for FailureKind "永続化先: なし（コード定数。等級への割当は config.json P5D-020）"
+  note for FailureEvent "永続化先: なし（インメモリ。F/W は封筒として beads のコメントに写像、I は呼び手経由で実行履歴）"
+  note for Measurement "永続化先: なし（インメモリ。RunVerdict に載せて返す。永続は呼び手の実行履歴 csv）"
+  note for RunVerdict "永続化先: なし（インメモリ）"
+  note for RunHalted "永続化先: なし（インメモリ。BaseException 直系で kernel の AppError 階層に入れない）"
+  note for MappingUnverified "永続化先: なし（インメモリ。停止痕跡は構造化ログ D06-k）"
+  note for MonitorDeps "永続化先: なし（インメモリ）"
+  note for MonitorHandle "永続化先: なし（インメモリ）"
+  note for MonitorConfig "永続化先: ファイル（monitor/config.json。開発者が commit。等級割当の差替えはここ）"
+  note for RunState "永続化先: なし（インメモリ。begin〜finish の間だけ。single-flight 前提 P5D-021）"
+  note for Envelope "永続化先: なし（インメモリ。本文は beads のコメントへ＝board 経由）"
+  note for DetectionRule "永続化先: なし（コード定数 EVENT_RULES＋config.json の文言。task_output 観測点は no_output だけに縮小し、truncated_answer は outbound へ・structured_conversion は proposal の有無へ移した＝ SD-01・SD-02）"

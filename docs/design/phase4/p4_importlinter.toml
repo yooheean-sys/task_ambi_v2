@@ -1,0 +1,106 @@
+# import-linter contract 案 — task_ambi_v4 第4フェーズ（D09-g）
+# 置き場: 実装ではリポジトリルートの .importlinter（INI 形式）。本ファイルの TOML 断片はそのままは置けず、
+#         INI 構文へ転記して使う（契約の意味内容は保つ）。DIFF-01 の裁定。
+# 図 p4_module_dependency.mmd・p4_module_contract.csv と MOD 名を一致させること（python3 で機械検査。notes §5）
+# 憲章 §1 が必須とするのは (1) independence と (2) layers。(3) forbidden は憲章外の追加「案」で、4.5 で §1 への取り込みを判断する。
+# 前提: 各 feature は uv workspace パッケージで、import 名は packages/features/<mod>/src/<mod>/ の <mod>。
+#       common は packages/common/src/common/。apps は apps/api/src/api・apps/ui/src/ui。
+
+[tool.importlinter]
+# 注記: 下の root_packages は完成形の姿。実装では実在するパッケージのみを列挙し、モジュール追加ごとに追記する
+#       （未作成パッケージ名を書くと lint-imports が "Could not find package" で実行不能になる。DIFF-04）。
+root_packages = [
+  "api", "ui",
+  "trigger", "orchestrator", "stages", "executor", "settings", "board", "vault", "monitor", "repo",
+  "common",
+]
+include_external_packages = true   # (3) の forbidden で外部パッケージを対象にするため
+
+# (1) 憲章 §1: features 配下の各パッケージは相互に独立（同一 BC 内の orchestrator/stages/executor も含む）
+#     注記: 本契約が見るのは src のみ。テストコードの feature 間 import は、src レイアウトのため
+#     packages/features/<mod>/tests/ が grimp のモジュールグラフに載らず捕捉できない（実測。DIFF-08）。
+#     憲章 §1「テストコードも同様」は apps/api/tests/foundation/ の AST 静的走査で担保する。
+[[tool.importlinter.contracts]]
+name = "features are independent (no feature imports another feature; src only)"
+type = "independence"
+modules = [
+  "trigger", "orchestrator", "stages", "executor", "settings", "board", "vault", "monitor", "repo",
+]
+
+# (2) 憲章 §1・§7-5: 依存方向は apps → features → common の一方向のみ（common は feature を import しない）
+#     016（D23）で先頭行を "api | ui"（独立の同層）から "api : ui"（非独立の同層）に改めた。UI を app と同じ
+#     プロセスに /ui で同居させるため apps/ui → api を通す必要が生じたため（contracts/import-boundaries.md §1-1）。
+#     ui と api を別の行に分けない（分けると ui が上層・api が中間層とみなされる）。逆向き（api → ui）の禁止は
+#     下の (2b) が担う。
+[[tool.importlinter.contracts]]
+name = "layers: apps -> features -> common"
+type = "layers"
+layers = [
+  "api : ui",
+  "trigger | orchestrator | stages | executor | settings | board | vault | monitor | repo",
+  "common",
+]
+
+# (2b) 016（D23）で新設: apps/ui は api を import してよく、api は apps/ui を import してはならない
+#      （FR-029・contracts/import-boundaries.md §1-3）。(2) の "api : ui" は同層として双方向を許すので、
+#      片方向の禁止を 2 段の layers でここに書く。実装側 .importlinter の
+#      [importlinter:contract:ui-over-api] に対応する。
+[[tool.importlinter.contracts]]
+name = "apps/ui may import api; api must not import ui"
+type = "layers"
+layers = [
+  "ui",
+  "api",
+]
+
+# (3) 案: 外部依存の単位で切った BC（D08）を実装で保証する。所有 MOD 以外からの import を禁止する。
+#     図の外部システム配置と一致: crewai=executor／casbin=settings／apscheduler,watchdog=trigger／httpx=executor,monitor／nicegui=UI 保持 MOD の ui と apps/ui
+#     beads は bd CLI（subprocess）なので import では捕まえられない → board の SKILL.md 規約とレビューで守る
+[[tool.importlinter.contracts]]
+name = "crewai only in executor"
+type = "forbidden"
+source_modules = ["trigger", "orchestrator", "stages", "settings", "board", "vault", "repo", "monitor", "common", "api", "ui"]
+forbidden_modules = ["crewai"]
+
+[[tool.importlinter.contracts]]
+name = "casbin only in settings"
+type = "forbidden"
+source_modules = ["trigger", "orchestrator", "stages", "executor", "board", "vault", "repo", "monitor", "common", "api", "ui"]
+forbidden_modules = ["casbin"]
+
+[[tool.importlinter.contracts]]
+name = "apscheduler / watchdog only in trigger"
+type = "forbidden"
+source_modules = ["orchestrator", "stages", "executor", "settings", "board", "vault", "repo", "monitor", "common", "api", "ui"]
+forbidden_modules = ["apscheduler", "watchdog"]
+
+[[tool.importlinter.contracts]]
+name = "httpx only in executor and monitor (LLMHttpHook の型に要る。common/interfaces/monitor.py は型注釈のみ許容 → ignore_imports で明示)"
+type = "forbidden"
+source_modules = ["trigger", "orchestrator", "stages", "settings", "board", "vault", "repo", "api", "ui"]
+forbidden_modules = ["httpx"]
+# common/interfaces/monitor.py は httpx.Request/Response を型注釈に使う（D09-b）。common 全体を許すのではなく当該ファイルのみ ignore する:
+# ignore_imports = ["common.interfaces.monitor -> httpx"]  ← common を source に含める場合の逃がし方。本案では common を source に含めない
+
+# 016（D23）で UI 基盤を Streamlit から NiceGUI に置き換えたため、本契約を streamlit から nicegui に改めた
+# （旧名: "streamlit only in ui pages (settings.ui, trigger.ui) and apps/ui"）。
+# source_modules は実装側 .importlinter の nicegui-scope に実在する名前を全数含める（`.importlinter` ⊆ 設計側
+# ＝ SC-012・016 design-sync B-05）。settings・trigger はサブモジュール粒度で列挙し、`settings.ui`・`trigger.ui`
+# とトップレベルの `settings`・`trigger` は載せない（forbidden の source_modules は子孫を含むため）。
+[[tool.importlinter.contracts]]
+name = "nicegui only in ui pages (settings.ui, trigger.ui) and apps/ui"
+type = "forbidden"
+source_modules = ["orchestrator", "stages", "executor", "board", "vault", "monitor", "common", "api",
+                  "settings.service", "settings.router", "settings.repository", "settings.dependencies",
+                  "settings.schemas", "settings.models", "settings.exceptions",
+                  "trigger.service", "trigger.router", "trigger.repository", "trigger.dependencies",
+                  "trigger.schemas", "trigger.models", "trigger.exceptions", "trigger.correlation"]
+forbidden_modules = ["nicegui"]
+
+# 補足（憲章 §4 注記）: ui.py は自モジュールの service を直接 import せず HTTP で操作する。
+# これは import-linter で書ける（forbidden: settings.ui -> settings.service 等）が、同一パッケージ内規約なので (3) と同じく案扱い:
+[[tool.importlinter.contracts]]
+name = "ui pages do not import their own service (HTTP only)"
+type = "forbidden"
+source_modules = ["settings.ui", "trigger.ui"]
+forbidden_modules = ["settings.service", "settings.repository", "trigger.service", "trigger.repository"]

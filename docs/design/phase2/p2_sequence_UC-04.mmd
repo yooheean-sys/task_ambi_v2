@@ -1,0 +1,47 @@
+%% シーケンス図 UC-04 エスカレーション質問に回答する（往復）— task_ambi_v4 第2フェーズ
+%% 出典: 04_usecase_desc.csv UC-04／loop.py:927 _open_escalation（create→dep→release）／D04-c／D06-c
+%% 関連 DM: DM-13 issue／DM-15 質問 issue／DM-16 コメント／DM-07 メンバ台帳／DM-22 既定トリガー
+sequenceDiagram
+  autonumber
+  actor Me as 自分
+  participant UI as beads-ui
+  participant BD as beads（bd CLI）
+  participant OL as 外側ループ（実行 DM-18）
+  participant Crew as 実行器 CrewAI
+  participant Reg as メンバ台帳（DM-07）
+  participant Trig as 既定トリガー<br/>ready 巡回（DM-22）
+
+  Note over OL,Crew: kickoff 中に AI が行き詰まる
+  Crew-->>OL: escalate_to_human(試したこと, 詰まった理由, 決めてほしいこと)
+  OL->>BD: 未回答の質問が既にあるか（_open_question_of）
+  alt 既にある
+    BD-->>OL: 既存の質問 id（再利用・二重起票しない）
+  else 無い
+    OL->>BD: bd create kind:question「[要判断] …」priority=0（actor=メンバ ID）
+    BD-->>OL: qid
+    OL->>BD: add_dependency(元 issue → blocks-by → qid)
+  end
+  OL->>BD: release(元 issue)（in_progress のままだと ready にも blocked にも出ない）
+  OL->>BD: 確認読取（元 issue が open+blocked、質問が open）
+  Note over BD: 元 issue は open+blocked で待機。プロセスは何も握らない（watch モード廃止 D04-c）
+
+  Me->>UI: 質問 issue を開く
+  Me->>UI: 回答をコメント（actor=自分＝台帳の人間 actor）
+  UI->>BD: bd comment
+  opt 書き直し
+    Me->>UI: close 前にコメント追記
+  end
+  Me->>UI: 質問 issue を close（2 手分離: コメントだけでは再開しない）
+  UI->>BD: bd close qid
+  BD-->>BD: blocks が外れ元 issue が ready に浮上
+
+  Trig->>OL: interval 発火（ready 巡回。回答後の待ち時間 = 巡回間隔）
+  OL->>BD: bd ready --claim（起動条件 DM-23 のラベルフィルタ）
+  BD-->>OL: 元 issue
+  OL->>BD: bd comments（質問の回答を取得）
+  OL->>Reg: 回答 actor が台帳内の人間か判定
+  alt 台帳外 actor
+    Reg-->>OL: 不明 actor → 印を残す（人間に黙って倒さない P3）
+  end
+  OL->>Crew: 回答を入力に注入し続きから kickoff（include UC-I1）
+  Note over OL: 質問 close 後の試行回数は非リセット（穴⑩・PoC 事実。ハーネス設計で扱う）

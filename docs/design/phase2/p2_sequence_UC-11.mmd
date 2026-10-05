@@ -1,0 +1,50 @@
+%% シーケンス図 UC-11 無人でタスク遂行を起動する（発火→回収→claim）— task_ambi_v4 第2フェーズ
+%% 出典: 04_usecase_desc.csv UC-11／付録：トリガー §1・§3・§6／D01／D04-c／D06-h,j／D07-a,b
+%% 関連 DM: DM-22 トリガー定義／DM-23 起動条件／DM-24 実行履歴／DM-19 実行コンテキスト／DM-18 実行／DM-13 issue
+sequenceDiagram
+  autonumber
+  actor Timer as タイマ（cron/interval）
+  actor Drop as ファイル投下（DL フォルダ）
+  actor Me as 自分（手動実行）
+  participant Trig as トリガー（DM-22/23）
+  participant Hist as 実行履歴（DM-24）
+  participant OL as 外側ループ（実行 DM-18）
+  participant Recover as 起動時回収 recover_orphans
+  participant BD as beads（bd CLI）
+
+  Note over Trig: 前提: daemon が flock で単一起動。既定トリガー「ready 巡回」を含む
+  alt timer
+    Timer->>Trig: 発火（max_instances=1, coalesce=True）
+  else file
+    Drop->>Trig: 監視フォルダに置き込み（PollingObserver）
+    Trig->>Trig: 書き込み完了検知（完了まで起動しない AC-R12-2）
+  else manual
+    Me->>Trig: POST /triggers/{id}/run
+  end
+  Trig->>Hist: run 開始を記録（実行ID・トリガー snapshot・起動種別・blame）
+  Trig->>OL: 起動（実行コンテキスト DM-19: 起動種別／trigger_snapshot／dropped_path／correlation_id）
+  Note over OL: 投下ファイルは消費しない（パスを blame に残すのみ D06-h）
+
+  OL->>Recover: 起動時回収
+  Recover->>BD: state:working の残骸を列挙
+  loop 残骸ごと
+    Recover->>BD: children_of(親)（盤面から導出 D01）
+    alt 子が既にいる親
+      Recover->>BD: 再投入せず人間へ（二重起票ガード）
+    else 未回答の質問待ち
+      Recover-->>Recover: 触らない（crash window 用ガード）
+    else 純粋な残骸
+      Recover->>BD: claim 解放・再投入
+    end
+  end
+
+  OL->>BD: bd ready --claim（起動条件 DM-23: ラベル集合＋任意 project:）
+  alt ready なし
+    BD-->>OL: 空 → 周回終了（watch はしない）
+  else
+    BD-->>OL: issue（人間回答で blocks が外れた issue もここで拾う D04-c）
+    OL->>OL: 【include UC-I1】
+  end
+  OL-->>Trig: 終了（status／result）
+  Trig->>Hist: run 終了を記録（duration・status）
+  Note over Hist: 履歴はローカル csv に追記するだけ（ログ扱い、D07-b）。撤退状態の除外規則は R12-P2（UC-06 据え置きと連動）

@@ -1,0 +1,188 @@
+%% board（BC-02 盤面）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p2_domain_model.mmd DM-13〜16／p4_module_contract.csv IF-01〜22／p4 notes §2（受け渡し型 board.py 4 件＋本フェーズで IssueRef を追記）／PoC bd.py（PoC 基準版、読取のみ）
+%% 記法: classDiagram（本システムは RDB を持たない）。namespace common_interfaces_board_py＝受け渡し型（実体は common/interfaces/board.py。D11-d）／
+%%   namespace board_internal＝MOD 内部（config・build 引数と戻り・adapter の内部型）／namespace beads_entities＝外部ツール beads 上の実体（bd --json の構造。erDiagram の代わりに classDiagram で表す）
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+%% 裁定: P5D-003〜007（p5_decision_log.csv）
+classDiagram
+  direction LR
+
+  namespace common_interfaces_board_py {
+    class Issue["Issue（DM-13 の写像）"] {
+      <<受け渡し型>>
+      +id
+      +title
+      +description
+      +status IssueStatus
+      +labels list~str~
+      +parent str | None
+      +assignee str | None
+      +acceptance str 生文字列（DM-14 の書式は stages が解釈）
+      +dependencies list~IssueRef~ 自分をブロックする側（closed も残る）
+      +created_at / updated_at
+    }
+    class IssueRef["IssueRef（依存先の要約。追記）"] {
+      <<受け渡し型>>
+      +id
+      +title
+      +status IssueStatus
+      +labels list~str~
+      +dependency_type blocks | parent-child
+    }
+    class IssueStatus["IssueStatus"] {
+      <<enumeration>>
+      open
+      in_progress
+      blocked
+      closed
+    }
+    class Comment["Comment（DM-16 の生データ）"] {
+      <<受け渡し型>>
+      +id
+      +issue_id
+      +actor bd の author
+      +body
+      +created_at
+      +種別（人間指示／回答／封筒）は持たない（P5D-005）
+    }
+    class IssueSpec["IssueSpec（起票仕様）"] {
+      <<受け渡し型>>
+      +title
+      +description
+      +labels list~str~ 呼び手が全て載せる（FN-05）
+      +parent str | None
+      +acceptance str
+      +priority int 既定 2
+      +issue_type str 表示装飾のみ 既定 task
+    }
+    class ClaimFilter["ClaimFilter（DM-23 起動条件の写像）"] {
+      <<受け渡し型>>
+      +labels frozenset~str~ AND 条件 既定 role:executor
+      +project_key str | None → project:<key> を追加
+    }
+    class IssueNotFound["IssueNotFound"] {
+      <<exception>>
+      +NotFoundError を継承
+      +issue_id
+    }
+    class BoardUnavailable["BoardUnavailable"] {
+      <<exception>>
+      +UnavailableError を継承
+      +argv / rc / stderr_head / attempts
+    }
+    class BoardWriteUnverified["BoardWriteUnverified"] {
+      <<exception>>
+      +UnverifiedError を継承
+      +issue_id / 不一致の内容
+    }
+  }
+
+  namespace board_internal {
+    class BoardDeps["BoardDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +（空。他 Protocol に依存しない）
+    }
+    class BoardHandle["BoardHandle（build の戻り）"] {
+      <<frozen dataclass>>
+      +board_reader BoardReader
+      +board_writer BoardWriter
+      +router None
+    }
+    class BoardEnv["BoardEnv（.env）"] {
+      <<Settings>>
+      +BEADS_DIR .beads ディレクトリ自身（絶対パス・必須。直下に config.yaml。D19-a）
+      +BD_BIN bd 実行ファイル（任意・既定 bd。systemd 下は絶対パス推奨）
+    }
+    class BoardConfig["BoardConfig（board/config.json）"] {
+      <<Settings>>
+      +timeout_sec 既定 120
+      +lock_wait_max_attempts 既定 3
+      +lock_wait_base_sec 既定 0.5
+      +lock_hints list~str~ 既定 lock/locked/busy/…
+      +list_limit_none -n 0 を付ける
+    }
+    class BdCommand["BdCommand（repository への 1 依頼）"] {
+      <<VO>>
+      +argv list~str~ 先頭はホワイトリスト内
+      +actor str | None → env BEADS_ACTOR
+      +write bool 直列化と監査の判定
+      +issue_id str | None ログ用
+    }
+    class BdResult["BdResult"] {
+      <<VO>>
+      +rc
+      +stdout / stderr_head
+      +attempts
+      +elapsed_sec
+      +json Any | None
+    }
+    class BdCommandError["BdCommandError（内部例外）"] {
+      <<exception>>
+      +kind not_found | lock_exhausted | unavailable | other
+      +argv / rc / stderr / attempts（試行回数。FR-043 が BoardUnavailable に要求するため BdCli が載せる）
+    }
+  }
+
+  namespace beads_entities {
+    class BdIssue["beads issue（bd show/list --json）"] {
+      <<外部実体>>
+      +id 階層 ID 親ID.n
+      +title / description
+      +status
+      +priority / issue_type
+      +labels
+      +parent
+      +assignee
+      +acceptance_criteria / design / notes
+      +dependencies list（closed も残る）
+      +dependent_count
+      +created_at / updated_at / closed_at
+    }
+    class BdComment["beads comment（bd comments --json）"] {
+      <<外部実体>>
+      +id
+      +issue_id
+      +author
+      +text
+      +created_at
+    }
+    class BdDependency["beads dependency（bd dep list --json）"] {
+      <<外部実体>>
+      +id / title / status
+      +labels
+      +dependency_type blocks | parent-child
+    }
+  }
+
+  Issue "1" *-- "0..*" IssueRef : dependencies
+  Issue --> IssueStatus
+  IssueRef --> IssueStatus
+  Issue ..> BdIssue : models.py で写像
+  IssueRef ..> BdDependency : models.py で写像
+  Comment ..> BdComment : models.py で写像
+  IssueSpec ..> BdIssue : create 引数に展開
+  BoardHandle ..> BoardEnv : build が読む
+  BoardHandle ..> BoardConfig : build が読む
+  BdCommand ..> BdResult : repository.run
+  BdCommandError ..> BoardUnavailable : service.py で翻訳
+  BdCommandError ..> IssueNotFound : service.py で翻訳
+
+  note for Issue "永続化先: なし（インメモリの写像。実体は beads の issue＝DM-13。盤面の正は常に bd を読み直す P2）"
+  note for IssueRef "永続化先: なし（インメモリの写像。p4 notes §2 の 22 件に本フェーズで追記）"
+  note for IssueStatus "永続化先: なし（コード定数。bd の status 語彙）"
+  note for Comment "永続化先: なし（インメモリの写像。実体は beads の comment＝DM-16）"
+  note for IssueSpec "永続化先: なし（インメモリ。起票 1 回の入力）"
+  note for ClaimFilter "永続化先: なし（インメモリ。実体は trigger の DM-23 が組む）"
+  note for IssueNotFound "永続化先: なし（インメモリ）"
+  note for BoardUnavailable "永続化先: なし（インメモリ。停止痕跡は呼び手が構造化ログに残す）"
+  note for BoardWriteUnverified "永続化先: なし（インメモリ。create の読み戻し不一致）"
+  note for BoardDeps "永続化先: なし（インメモリ）"
+  note for BoardHandle "永続化先: なし（インメモリ。composition root が保持）"
+  note for BoardEnv "永続化先: ファイル（リポジトリ直下 .env。環境依存値。board だけが読む。付3 D15-d で board/config.json から移設。BEADS_DIR は .beads 自身で bd へは env で渡す D19-a／c）"
+  note for BoardConfig "永続化先: ファイル（board/config.json。憲章 §5 の各モジュール config.json。git commit。bd_bin／beads_dir は付3 D15-d で .env（BoardEnv）へ）"
+  note for BdCommand "永続化先: なし（インメモリ。実行の記録は構造化ログ P5D-006）"
+  note for BdResult "永続化先: なし（インメモリ）"
+  note for BdCommandError "永続化先: なし（インメモリ）"
+  note for BdIssue "永続化先: beads（bd CLI 経由のみ。内部 Dolt は触らない。憲章 §2）"
+  note for BdComment "永続化先: beads（bd CLI 経由のみ）"
+  note for BdDependency "永続化先: beads（bd CLI 経由のみ）"

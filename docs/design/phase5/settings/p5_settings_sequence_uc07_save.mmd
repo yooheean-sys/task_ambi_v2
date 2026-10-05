@@ -1,0 +1,43 @@
+%% settings（BC-01 設定）内部シーケンス 副図 — UC-07 AI 設定の一覧・保存（validate 順方向・逆方向・cmd⊆定義・解決可能性 → 領域 A へ保存 → 台帳再導出 → スナップショット差替え）— task_ambi_v4 第5フェーズ
+%% 出典: p2_sequence_UC-07.mmd／D06-e／D07-e,f／FN-15/16/17/20/21/22/53/54/55／PoC casbin fleet/validate.py（collect_problems・_check_orphan_subjects）・fleet_ui（読取のみ）
+%% UI は自 MOD の service を直接 import せず HTTP で router を叩く（憲章 §4 注記・linter (3)）
+sequenceDiagram
+  autonumber
+  actor Me as 自分
+  participant UI as settings/ui.py<br/>（Streamlit: AI 設定ページ）
+  participant R as settings/router.py<br/>（FastAPI。schemas.py の DTO で入出力）
+  participant Svc as settings/service.py
+  participant Repo as settings/repository.py<br/>（領域 A の YAML／csv／md 読書き）
+  participant Cas as settings/lib:casbin
+  participant A as 設定ファイル領域 A
+
+  Me->>UI: 一覧を見る（領域 A のファイル群: agents.yaml＝メンバ・ペルソナ既定／tasks.yaml＝段テンプレート／権限／ルール／hooks／LLM プロファイル／上限／コマンド定義。レベル: PJ・グローバル D16）
+  UI->>R: GET /settings/{kind}?project=…（HTTP）
+  R->>Svc: list_*(…)（現在のスナップショットから）
+  Svc-->>R: 一覧
+  R-->>UI: JSON（schemas）
+  Me->>UI: 追加・編集・削除（例: projects/<key>/agents.yaml に PersonaKey のエントリを足す＝メンバ作成 D07-f・D16-d／global/tasks.yaml の段テンプレートを編集 D16-a／LLM プロファイルに provider_kind・base_url・model_id・context_window・api_key_ref P5D-013／コマンド定義に name→argv D07-e）
+  UI->>R: PUT／POST／DELETE /settings/{kind}/…（HTTP）
+  R->>Svc: save_*(変更案)
+  Svc->>Svc: 変更後の候補を組む（**候補の素材は保持している生の構造**＝ AreaAData。保存のたびに領域 A を**読み直さない** A-11・FR-025。ファイルは未書込）
+  Svc->>Cas: 候補の policy.csv を Enforcer に読ませて構文検査
+  Note over Svc,Cas: FileAdapter はパスしか受けないので、**候補を置換先と同じディレクトリの一時ファイルに書いて**渡す（010 SD-02）。落ちたら必ず片付け、**通ればそのまま置換に再利用する**（同じ一時ファイルを二度作らない＝ FR-012a）
+  Svc->>Svc: validate 順方向（FN-16）: 全メンバの casbin_subject が policy の主体に居る／メンバのペルソナ ⊆ PJ の role_dirs（P5D-018）／agents.yaml・tasks.yaml の許可フィールド・禁止キー（D16-d/f）／キー・agent ∈ PersonaKey・llm ∈ プロファイル・tools ∈ ToolName（D16-b）／tasks.yaml の {変数} 許可集合＋段別必須（D16-c）／スキル・MCP・hooks の解決可能性（接続しない）
+  Svc->>Svc: validate 逆方向（FN-17）: policy の member: 主体 ⊆ 台帳
+  Svc->>Svc: validate コマンド（FN-54）: policy の cmd:<名前> ⊆ commands.yaml の名前、定義の名前は 1 行以上の policy から参照
+  Svc->>Svc: キー・ID 規則: member_id＝<project_key>.<persona_key>、PersonaKey は kernel 列挙、project_key は登録済み
+  alt 違反あり
+    Svc-->>R: SettingsValidationError（problems[]: 場所・種別・理由）
+    R-->>UI: 422＋problems（P1 ゲート。何も書かない）
+    UI-->>Me: 拒否＋理由を表示
+  else 通過
+    Svc->>Repo: 段 3-0: 新規 PJ なら projects/<key>/ を作る（plan D-j。失敗したら空のまま片付ける）
+    Svc->>Repo: write_all(候補の差分ファイルだけ)
+    Repo->>A: 一時ファイルを**全部作ってから** os.replace を順に呼ぶ（agents.yaml／tasks.yaml／policy.csv／rules.md 等 D16）
+    Svc->>Svc: 台帳（DM-07）を再導出（bd_actor／casbin_subject。導出元は agents.yaml のキー D16。P4: 宣言せず導く）→ Enforcer 再構築 → 新スナップショット（世代＋1）に差替え（P5D-016）
+    Svc-->>R: 保存結果（世代・反映区分: 権限／コマンド定義＝即時、その他＝次回 kickoff から）
+    R-->>UI: **200 ＋ 応答ヘッダ X-Settings-Generation・X-Settings-Effect（immediate｜next-kickoff）**
+    Note over R,UI: 正本の成功応答の本文に世代の置き場が無く、削除系は 204 で本文自体が無いのでヘッダで返す（C-4・010 SD-12）。**綴りは next-kickoff（ハイフン）**で、内部表現との写像は router/__init__.py の 1 箇所（010 SD-18）
+    UI-->>Me: 「保存しました。権限・コマンド定義は即時、その他は次回 kickoff から効きます」（FN-22 読み替え P5D-016）
+  end
+  Note over Svc,A: 保存は全体を候補として検証してから書く（部分保存で不整合な瞬間を作らない）。書込中に落ちても os.replace 前なら旧ファイルが残る

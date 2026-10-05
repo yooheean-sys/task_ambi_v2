@@ -1,0 +1,67 @@
+%% orchestrator（BC-03 分解・遂行 — 外側ループ）内部シーケンス 主図 — KickoffRunner.run(ctx) 1 回の骨格（single-flight → 回収 → claim → 前処理 → kickoff → 段別処理（副図）→ finish → 次の ready）— task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-49（提供）・IF-01/04〜07/10〜14/16/19/21・23〜28・31/36・38/39・44〜48（利用）／p2_sequence_UC-11.mmd・UC-I1.mmd／D01・D04-c,d・D08-d,e・D09-e,f／FN-04/05/07/10/22/26/31/37/38/39／P5D-034〜038／PoC renkei loop.py（run_loop・recover_orphans・_handle_issue）（PoC 基準版、読取のみ）
+%% レーン規約（D11-c／P5D-003）: 呼び手＝Protocol 名（KickoffRunner は trigger から）／human 起動は router 経由（副図 p5_orchestrator_sequence_recover_human.mmd）／自 MOD 内部＝ファイル単位／利用先＝Protocol 名。kernel（CorrelationContext・Labels）は Note のみ
+%% 段別の詳細: propose → p5_orchestrator_sequence_propose.mmd／execute・レビュー・エスカレーション → p5_orchestrator_sequence_execute.mmd
+sequenceDiagram
+  autonumber
+  participant KR as KickoffRunner
+  participant Svc as orchestrator/service.py<br/>（OrchestratorService＝外側ループ。KickoffRunner の実装）
+  participant B as BoardReader／BoardWriter
+  participant S as SettingsReader／MemberResolver
+  participant V as VaultReader
+  participant M as RunMonitor
+  participant St as StageCatalog／ProposalGate
+  participant X as CrewExecutor
+
+  KR->>Svc: run(ctx: ExecutionContext)（起動種別・trigger_snapshot・dropped_path・claim_filter。correlation_id は呼び手が contextvar に bind 済み）
+  Svc->>Svc: single-flight: 非ブロッキングにロック取得（P5D-036）
+  alt 取れない（進行中あり）
+    Svc-->>KR: KickoffBusy（呼び手は履歴に busy として残す）
+  end
+  Svc->>Svc: kickoff_id 発番・KickoffRecord（running）を直近 N 件の保持に登録（P5D-035）
+  Svc->>Svc: recover_orphans（副図 recover_human）: list_working → children_of で 3 分岐（再投入／触らない／failing＋人間へ）
+
+  loop ready が空になるまで（watch はしない D04-c）。**一度手放した issue を再び claim したら release して周回を終える**（FR-022a。回収由来は「手放した」に数えない FR-022b）
+    Svc->>B: claim_next(ctx.claim_filter, actor=システム actor)
+    alt None
+      Svc->>Svc: 周回終了
+    else Issue
+      alt labels に state:failing（人間が直すまで触らない P5D-034）
+        Svc->>B: release(issue_id)（即解放。次の巡回でも同じ）
+      else
+        Svc->>Svc: 前処理（orchestrator-F05）
+        Svc->>St: resolve_stage(kind ラベル集合, has_parent) → StageSpec
+        Svc->>S: resolve(project_key（project: ラベル）, persona_key（persona: ラベル or 段の既定＝tasks.yaml の agent: D16-f）) → Member（CrewAI フィールド込み D16-h）
+        Svc->>S: get_project／get_limits／get_rules／get_hooks／get_tasks（IF-50 D16-h）
+        Note over Svc,S: 設定 5 種は **issue ごとに 1 回**読み、1 issue の処理中（差し戻しの再 run を含む）は**読み直さない**（5 つとも project_key を取るので「kickoff 開始時に 1 回」は組めない。P5D-016／P5D-049 の粒度が 1 issue 単位に弱まる件は B-37）
+        Svc->>V: check_project_folders(project.folders)（kickoff のたび FN-26）
+        alt 不在／ProjectNotFound／MemberNotFound／UnknownStage
+          Svc->>Svc: 人間へ渡す統一経路（orchestrator-F12）: comment([orchestrator] 理由・不在パス等)→ set_labels(state:failing, −state:working)→ release
+        else
+          Svc->>B: comments(issue_id)／open_question_of → 人間の指示・回答を収集（is_human で actor 判定 FN-07/10。副図 execute）
+          Svc->>M: begin(kickoff_id, limits, member.llm_profile.threshold_T)
+          Svc->>St: build_prompt(spec, member, rules, templates, ContextRefs（条文・親条文・human_guidance・input_refs・existing_children・purpose=work）, feedback=None)（D16-h）
+          Svc->>X: run(CrewSpec（bundle・member・hooks・mode・issue_id・folders）)
+          X-->>Svc: CrewOutcome（proposal｜task_output・completed・escalation・written・events・halted）
+          alt spec.mode == propose
+            Svc->>Svc: 副図 propose: validate → 被覆 → 差し戻し（上限まで）→ 起票・依存・確認読取 → CloseIntent
+          else execute
+            Svc->>Svc: 副図 execute: 完了ゲート → レビュー run → CloseIntent／差し戻し／エスカレーション
+          end
+          Svc->>M: finish(kickoff_id, issue_id, actor, outcome)
+          alt MappingUnverified
+            Svc->>Svc: 構造化ログに停止痕跡・KickoffResult.status=stopped・周回を打ち切る（黙って進まない P3）
+          else RunVerdict
+            Svc->>Svc: grade F → monitor が failing 済み（自分は触らない）／W → verdict.closed なら自分の close を抑止／I → KickoffResult.notes に付記
+            opt CloseIntent があり抑止されていない
+              Svc->>B: close(issue_id, reason, actor=member.bd_actor) → show（確認読取）
+            end
+          end
+          Note over Svc,M: **close は finish の後に 1 回**（C-1）。先に閉じると等級 W の抑止（FR-068）が空文になり、同じ issue へ close が 2 回飛ぶ
+        end
+      end
+    end
+  end
+  Svc->>Svc: KickoffRecord を done に更新、ロック解放
+  Svc-->>KR: KickoffResult（kickoff_id・status・処理 issue 一覧（issue_id・段・結果・grade）・notes・開始終了）
+  Note over Svc,X: 起票（create）・close・質問起票・依存張りは本 MOD だけが行う（D01 起票 1 箇所）。確認読取は children_of／show（板の導出は board）。人間へ渡す形は state:failing＋[orchestrator] コメント＋release に統一（P5D-034）

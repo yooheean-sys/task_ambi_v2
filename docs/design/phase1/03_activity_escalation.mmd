@@ -1,0 +1,50 @@
+%% アクティビティ図 (2/4): エスカレーション往復 — UC-04（UC-I1 の extend）
+%% 出典: 04_usecase_desc.csv UC-04 / 7-2 K-1 行5・7 / §8.3「エスカレーション / 2手分離」/ loop.py _open_escalation（create→dep→release, PoC 基準版）/ 設計判断_V4-D04
+%% 要点: (1) 待機中の元 issue は claim を解放済み（open + 質問 issue の blocks で ready に出ない）— PoC 既存実装
+%%       (2) コメントだけでは再開しない（close が再開の合図）。回答者 actor は AI と別名（E4）
+%%       (3) 再開の起点は ready 巡回（interval 既定トリガー）または手動実行の 1 系統のみ。watch モードは持たない（D04-c、E6 解消）
+flowchart TD
+  subgraph ai["システム側（外側ループ）"]
+    A1[AI が行き詰まる<br/>what_i_tried / why_stuck / decision_needed] --> A2[kind:question issue を起票]
+    A2 --> A3[元 issue に blocks 依存を張る<br/>質問が open の間 ready に出ない]
+    A3 --> A4[元 issue の claim を解放<br/>in_progress → open]
+    A4 --> A5([このループは次の ready へ<br/>元 issue を保持しない])
+  end
+
+  subgraph human["人間側（beads-ui / bd）"]
+    H1([自分が質問 issue に気づく<br/>beads-ui 一覧 / bd list]) --> H2{どうする}
+    H2 -- 回答する --> H3[質問 issue にコメントで回答<br/>close 前なら書き直し可]
+    H3 --> H4[質問 issue を close<br/>= 再開の合図]
+    H2 -- コメントだけして<br/>close し忘れ --> H5[⚠ 再開しない<br/>P3: 無症状で待機が続く]
+    H5 -.-> H4
+    H2 -- 取り下げる --> H6[[UC-06 取り下げ【据え置き】]]
+  end
+
+  subgraph resume["再開（UC-11 の通常経路）"]
+    R1([ready 巡回 interval 既定トリガー<br/>または 手動実行]) --> R2[外側ループ bd ready --claim]
+    R2 --> R3{blocks が外れた<br/>元 issue が ready に?}
+    R3 -- はい --> R4[claim → 回答コメントを取得<br/>author が AI actor と別名か確認 E4]
+    R4 --> R5[回答を入力に注入して kickoff<br/>続きから]
+    R5 --> R6([UC-I1 に戻る])
+    R3 -- いいえ --> R7([次の巡回を待つ<br/>待ち時間 = 巡回間隔])
+  end
+
+  A2 -. 質問 issue が見える .-> H1
+  H4 -. close で blocks が外れる .-> R3
+
+  %% 回収層との関係（起動時）— crash window のみ
+  C0([プロセス再起動 / トリガー起動]) --> C1[recover_orphans<br/>自 actor の in_progress を列挙]
+  C1 --> C2{未回答の質問<br/>待ちか?}
+  C2 -- はい<br/>create→dep→release の<br/>途中で死んだ残骸 --> C3[触らない<br/>人間待ちを勝手に ready へ戻さない]
+  C2 -- いいえ --> C4[通常の回収へ<br/>→ 03_activity_trigger]
+  C3 -. 質問 close 後の次回回収で release → ready .-> R3
+
+  N1[/D04-c: 再開の所有者は ready 巡回の 1 系統。<br/>watch モード（ready が空でも質問が残る限り待つ）は廃止/]
+  R1 -.-> N1
+
+  classDef warn fill:#fdecea,stroke:#c0392b;
+  classDef note fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 3;
+  classDef guard fill:#e8f5e9,stroke:#2e7d32;
+  class H5 warn;
+  class N1 note;
+  class A4,C3 guard;

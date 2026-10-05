@@ -1,0 +1,19 @@
+{
+  "run_command_timeout_sec": 30,
+  "max_iter": 20,
+  "max_rpm": null,
+  "event_allowlist": [
+    "LLMCallStartedEvent",
+    "LLMCallCompletedEvent",
+    "LLMCallFailedEvent",
+    "ToolUsageStartedEvent",
+    "ToolUsageFinishedEvent",
+    "ToolUsageErrorEvent",
+    "LLMGuardrailStartedEvent",
+    "LLMGuardrailCompletedEvent",
+    "CrewKickoffCompletedEvent",
+    "CrewKickoffFailedEvent"
+  ],
+  "hook_catalog": [],
+  "disable_crewai_telemetry": true
+}

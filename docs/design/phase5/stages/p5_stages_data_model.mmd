@@ -1,0 +1,152 @@
+%% stages（BC-03 分解・遂行／プロンプト組立・提案の形のゲート。テンプレート・ペルソナ本文は引数で受ける D16）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p2_domain_model.mmd DM-08/09（＋DM-14 受け入れ条件の書式検査）／p4_module_contract.csv IF-44〜47／p4 notes §2（受け渡し型 stages.py 4 件＋本フェーズで ContextRefs・ProposalItem・PromptPurpose を追記）／D06-e,f,l／D08 Q2／PoC config.py・personas.py・backlog.py・acceptance.py・crew.py（読取のみ）
+%% 記法: classDiagram。namespace common_interfaces_stages_py＝受け渡し型／stages_internal＝MOD 内部（コード定数と config）。外部実体なし（stages は I/O を持たない）
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+%% 裁定: P5D-025〜028／P5D-047（P5-R1 D16。P5D-028 の改訂後: テンプレート本文は settings 所有の tasks.yaml、ペルソナ本文は Member）— p5_decision_log.csv
+classDiagram
+  direction LR
+
+  namespace common_interfaces_stages_py {
+    class StageSpec["StageSpec（DM-08）"] {
+      <<受け渡し型>>
+      +name StageName program|project|subrequest|child|plain
+      +mode propose | execute
+      +require_labels set~str~ 判定キー
+      +require_no_parent bool | None
+      +child_labels list~str~ 起票する子に必ず付ける（kind:*）
+      +allowed_personas set~PersonaKey~
+      +min_items 既定 1（config で段別上書き）
+      +max_acceptance int | None
+      +allow_depends_on bool
+      +require_outcome_path bool
+    }
+    class PromptPurpose["PromptPurpose"] {
+      <<enumeration>>
+      work
+      review
+    }
+    class ContextRefs["ContextRefs（build_prompt の材料。追記）"] {
+      <<受け渡し型>>
+      +issue_id / title / description
+      +acceptance 条文（生文字列）
+      +parent_title / parent_acceptance
+      +human_guidance list~str~ 人間の指示原文（FN-07）
+      +input_refs list~str~ vault ルート相対パス（OB-6）
+      +existing_children list~str~ 兄弟の title
+      +purpose PromptPurpose
+      +is_final_review bool
+      +repository_remote_url 任意（プロジェクトのリモートリポジトリ URL。CFG-74）
+      +repository_local_path 任意（プロジェクトのローカルリポジトリの OS 絶対パス。CFG-74）
+    }
+    class PromptBundle["PromptBundle（Agent＋Task の材料）"] {
+      <<受け渡し型>>
+      +persona_key
+      +role / goal / backstory（Member の本文＋rules 合成済み D16-h）
+      +task_description（TaskTemplate＋｛変数｝充填済み D16-c）
+      +expected_output
+      +task_tools list~ToolName~ | None（TaskTemplate.tools。あれば Agent.tools を上書き D16-a）
+      +purpose PromptPurpose
+      +proposal_schema 任意（propose 時の出力 schema 名）
+    }
+    class Proposal["Proposal（分解提案一式）"] {
+      <<受け渡し型>>
+      +items list~ProposalItem~ N 件まとめて
+    }
+    class ProposalItem["ProposalItem（追記。PoC BacklogItem と同形）"] {
+      <<受け渡し型>>
+      +title / summary / description
+      +acceptance list~str~
+      +depends_on list~int~ 提案内 index（前方のみ）
+      +persona PersonaKey | 空
+    }
+    class GateResult["GateResult"] {
+      <<受け渡し型>>
+      +ok bool
+      +problems list~str~ 指摘（差し戻し本文）
+      +observations list~str~ single_child 等（観測印の元）
+      +order list~int~ topo 順（起票順）
+    }
+    class UnknownStage["UnknownStage"] {
+      <<exception>>
+      +NotFoundError を継承
+    }
+    class UnknownPersona["UnknownPersona"] {
+      <<exception>>
+      +NotFoundError を継承
+    }
+  }
+
+  namespace stages_internal {
+    class StagesDeps["StagesDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +（空。他 Protocol に依存しない）
+    }
+    class StagesHandle["StagesHandle（build の戻り）"] {
+      <<frozen dataclass>>
+      +stage_catalog StageCatalog
+      +proposal_gate ProposalGate
+      +router None
+    }
+    class StagesConfig["StagesConfig（stages/config.json）"] {
+      <<Settings>>
+      +min_items_override dict~StageName,int~ 既定 空（全段 1）
+      +min_acceptance_len 既定 10
+      +placeholder_patterns
+      +max_acceptance_default
+    }
+    class StageTable["StageTable（DM-08 の 5 段。コード定数）"] {
+      <<VO>>
+      +program / project / subrequest / child / plain
+      +判定順序と child_labels の連鎖（program→request→subrequest→child）
+      +kind_key と require_labels を別に持つ（SD-52。child は kind_key=child だが require_labels は空。導出すると kind ラベルの無い子が落ちない）
+    }
+    class PersonaGroup["PersonaGroup（DM-09 の段所属。コード定数）"] {
+      <<VO>>
+      +key PersonaKey
+      +group PROPOSE | EXECUTE（ただ 1 つ）
+      +propose 4（planner・project_lead・system_engineer・doc_lead）／execute 5（SD-49 (m)）
+    }
+    class Renderer["Renderer（｛変数｝充填。コード定数）"] {
+      <<VO>>
+      +vars 許可集合 15（ContextRefs 由来。D16-c の正本）
+      +required_vars 段別必須（propose 3 段: persona_guide＋acceptance／child・plain・review_*: acceptance）
+      +render(template: TaskTemplate, ctx, guide, feedback) str
+      +｛persona_guide｝は見出し＋キーのみを PersonaKey 定義順で並べる（SD-51。役割・目標は載せない＝本文を持たない D16-g）
+    }
+    class AcceptanceRules["AcceptanceRules（形の検査。コード定数＋config）"] {
+      <<VO>>
+      +is_checkbox_line
+      +is_placeholder
+      +min_len
+      +outcome_token 正規表現（backlog.py _OUTCOME_TOKEN 継承）
+      +outcome_filename(token) 正準形の切り出し 1 箇所
+    }
+  }
+
+  Proposal "1" *-- "1..*" ProposalItem
+  ContextRefs --> PromptPurpose
+  PromptBundle --> PromptPurpose
+  StageSpec ..> StageTable : resolve_stage が引く
+  PromptBundle ..> PersonaGroup : 段整合の検査
+  PromptBundle ..> Renderer : 充填（TaskTemplate は build_prompt の引数 D16-h）
+  GateResult ..> AcceptanceRules : 検査
+  GateResult ..> StageSpec : min_items・allowed_personas
+  StagesHandle ..> StagesConfig : build が読む
+  StageTable ..> StagesConfig : min_items 上書き
+
+  note for StageSpec "永続化先: なし（インメモリ。元は StageTable＝コード定数、min_items のみ config.json）"
+  note for PromptPurpose "永続化先: なし（コード定数）"
+  note for ContextRefs "永続化先: なし（インメモリ。呼び手が issue・コメント・vault 一覧から組む）"
+  note for PromptBundle "永続化先: なし（インメモリ。CrewSpec に載って executor へ。テンプレート実体は settings 所有の tasks.yaml D16）"
+  note for Proposal "永続化先: なし（インメモリ。executor が LLM 出力から組む）"
+  note for ProposalItem "永続化先: なし（インメモリ。合格後は呼び手が IssueSpec に写して beads へ）"
+  note for GateResult "永続化先: なし（インメモリ）"
+  note for UnknownStage "永続化先: なし（インメモリ）"
+  note for UnknownPersona "永続化先: なし（インメモリ）"
+  note for StagesDeps "永続化先: なし（インメモリ）"
+  note for StagesHandle "永続化先: なし（インメモリ）"
+  note for StagesConfig "永続化先: ファイル（stages/config.json。min_items の上書きはここ D08 Q2。UC-07 の対象外）"
+  note for StageTable "永続化先: なし（コード定数）"
+  note for PersonaGroup "永続化先: なし（コード定数。キーは kernel PersonaKey。role/goal/backstory の本文は settings 所有の global/agents.yaml＝Member で受ける D16）"
+  note for Renderer "永続化先: なし（コード定数。テンプレート本文は tasks.yaml＝TaskTemplate 引数 D16。入力規則スロット ｛input_rules｝ の採否は出荷時既定の本文で P5D-027）"
+  note for AcceptanceRules "永続化先: なし（コード定数＋config.json の閾値。PoC 書式のまま P5D-025）"

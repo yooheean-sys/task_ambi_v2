@@ -1,0 +1,53 @@
+%% board（BC-02 盤面）内部シーケンス 副図 — 盤面導出の読取（list_working／open_question_of／has_open_issues／comments）と写像系の書込（set_labels／release）— task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-05〜09/14〜18/21〜22／D01／D06-i／D08-e／FN-38／PoC loop.py:805-818（_questions_of／_open_question_of）・bd.py（読取のみ）
+%% 呼び手はいずれも Protocol 名のレーン（P5D-003）。BoardWriter の写像系（IF-15/18/20/22）は同じ経路で monitor 側の RunMonitor.finish から呼ばれる（レーンには描かない）
+sequenceDiagram
+  autonumber
+  participant Reader as BoardReader
+  participant Writer as BoardWriter
+  participant Svc as board/service.py<br/>（BoardService）
+  participant Repo as board/repository.py<br/>（BdCli アダプタ）
+  participant BD as bd CLI
+
+  Reader->>Svc: list_working(filter: ClaimFilter)（起動時回収 FN-38）
+  Svc->>Repo: run(["list","-l","state:working",("-l",label)…,"--all","-n","0"], write=False)
+  Repo->>BD: bd list -l state:working … --json
+  BD-->>Repo: 残骸候補
+  Svc-->>Reader: list[Issue]（closed は除外して返す。何を再投入するかは呼び手 D01/D09-d）
+
+  Reader->>Svc: open_question_of(issue_id)
+  Svc->>Repo: run(["show", issue_id], write=False)
+  Repo->>BD: bd show <id> --json
+  BD-->>Repo: issue（dependencies に closed の依存も残る）
+  Svc->>Svc: dependencies から labels に kind:question を含み status≠closed の最初の 1 件を選ぶ（bd の順。dependency_type では絞らない R-19）
+  Svc->>Repo: run(["show", 選ばれた id], write=False)（**2 回目の show**。該当なしなら打たない）
+  Repo->>BD: bd show <選ばれた id> --json
+  BD-->>Repo: issue
+  Svc-->>Reader: Issue | None（該当なしは bd 1 回で None）
+
+  Reader->>Svc: has_open_issues(project_key)（削除ガード FN-27）
+  Svc->>Repo: run(["list","-l", "project:<key>"], write=False)（--all も -n 0 も付けない。既定＝完了済みを除く全状態＝in_progress を含む M-25）
+  Repo->>BD: bd list -l project:<key> --json
+  BD-->>Repo: 未完了 issue 一覧（closed を除く全状態）
+  Svc-->>Reader: bool
+
+  Reader->>Svc: comments(issue_id)
+  Svc->>Repo: run(["comments", issue_id], write=False)
+  Repo->>BD: bd comments <id> --json
+  BD-->>Repo: bd の返す順のまま
+  Svc-->>Reader: list[Comment]（id・actor＝author・body・created_at の生データ。種別判定は呼び手 P5D-005）
+
+  Writer->>Svc: set_labels(issue_id, add, remove, actor)
+  Svc->>Svc: state 次元は排他: add に state:* があれば同次元の他値を remove に足す（loop.py:68-69 の規律）
+  Svc->>Svc: remove ← remove ∖ add に正規化する（同一ラベルが双方にあると bd は remove を優先 M-12）
+  Svc->>Repo: run(["update", issue_id, ("--remove-label", l)*, ("--add-label", l)*], actor, write=True)（**1 回にまとめる** DIFF-10。両集合が空なら打たない）
+  Repo->>BD: bd update … （付いていない/付いている場合も rc=0＝冪等）
+  Svc-->>Writer: None
+
+  Writer->>Svc: release(issue_id, actor)（claim 解放。F 級写像・差し戻し・回収）
+  Svc->>Repo: run(["update", issue_id, "--status","open","--assignee",""], actor, write=True)
+  Repo->>BD: bd update … --status open --assignee ""
+  Svc->>Repo: run(["update", issue_id, "--remove-label","state:working"], actor, write=True)
+  Repo->>BD: bd update … --remove-label state:working
+  Svc-->>Writer: None（status と assignee の両方を戻さないと ready に出ず無症状停滞。bd.py release の注記）
+  Note over Svc,BD: 写像後の反映確認（show／comments の再読）は呼び手が行う（D04-b）。board は書込を検証しない（create の読み戻しのみ例外）

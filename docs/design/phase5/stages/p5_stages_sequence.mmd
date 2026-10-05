@@ -1,0 +1,48 @@
+%% stages（BC-03 分解・遂行の純粋 MOD）内部シーケンス 主図 — 1 周回で stages が受ける呼び出し列（resolve_stage → build_prompt →（executor 実行）→ validate_proposal → extract_outcome_tokens）— task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-44〜47／p2_sequence_UC-I1.mmd 2-3・13-21・40／D06-e,f／D08 Q2／D09-f／FN-04/46/47/48/51／PoC renkei config.py（Stage・resolve_stage）・personas.py・backlog.py・acceptance.py・crew.py（TASK_TEMPLATES・REVIEW_TASK_TEMPLATES・render_persona_guide）（PoC 基準版、読取のみ）
+%% レーン規約（D11-c／P5D-003）: 呼び手＝Protocol 名。stages は他 Protocol を一切使わず外部にも触れない（I/O なし・例外は契約例外のみ・検証結果は指摘リストで返す＝backlog.py の設計上の要点を継承）
+sequenceDiagram
+  autonumber
+  participant Cat as StageCatalog
+  participant Gate as ProposalGate
+  participant Svc as stages/service.py<br/>（StageCatalog・ProposalGate の実装。純関数群）
+  participant Cfg as config.json
+
+  Note over Svc,Cfg: build 時のみ: stages/config.json から min_items の段別上書き（既定は全段 1。D06-f）と acceptance 形式の閾値を読む<br/>段表（DM-08 5 段）・ペルソナの段所属・{変数}規則はコード定数。テンプレート本文（tasks.yaml）とペルソナ本文（agents.yaml→Member）は**引数で受ける**（D16。以後も I/O なし＝純粋性維持 D09-f）
+  Svc->>Cfg: 読取（build 時）
+
+  Cat->>Svc: resolve_stage(kind_labels, has_parent)
+  Svc->>Svc: 事前検査（段表照合の**前**。SD-41）: kind 値が 2 つ以上／段表が参照しない値（question・綴り違い）／名指しされた段の親の要求違反
+  Svc->>Svc: 段表を順に照合: require_labels ⊆ kind_labels ∧ require_no_parent の条件（program→project→subrequest→child→plain。bd の type は見ない）
+  alt 事前検査に掛かる
+    Svc-->>Cat: UnknownStage（plain が受け皿である以上、宣言順の照合だけでは 1 度も発火しない）
+  else
+    Svc-->>Cat: StageSpec（name・mode propose|execute・child_labels・allowed_personas・min_items（config 上書き済み）・max_acceptance・allow_depends_on・require_outcome_path）
+  end
+
+  Cat->>Svc: build_prompt(spec, member: Member, rules: Rules, templates: TaskTemplates, ctx: ContextRefs, feedback)（D16-h）
+  alt templates にキーが無い／（**ctx.purpose=work のときだけ** SD-50）member.persona_key が PersonaKey 外・spec.mode と段所属（PersonaGroup）が不整合
+    Svc-->>Cat: UnknownPersona（キー外・不整合）／UnknownStage（テンプレート欠落）
+  else
+    Svc->>Svc: member.role/goal/backstory（agents.yaml 由来）＋rules.project_rules を backstory に合成（D06-e 改・D16-h。knowledge_sources 不採用）
+    Svc->>Svc: ctx.purpose と段で TaskTemplate（templates の 7 キー D16-a）を選び {変数} を埋める:<br/>条文（title/description/acceptance）・親の条文・担当一覧（allowed_personas から動的生成し {persona_guide} でのみ入る FN-46・D16-c）<br/>・人間の指示（ctx.human_guidance FN-07）・差し戻し理由（feedback）・入力規則（{input_rules} P5D-027）・入力パス一覧（ctx.input_refs）
+    Svc-->>Cat: PromptBundle（role・goal・backstory・task_description・expected_output・task_tools（D16-a）・purpose・proposal_schema（propose のみ））
+  end
+
+  Note over Cat,Gate: （executor が PromptBundle で Crew を組み実行。propose 段なら Proposal が返る）
+
+  Gate->>Svc: validate_proposal(proposal, spec, existing_children)
+  Svc->>Svc: 件数: len(items) ≥ spec.min_items（不足は指摘）。ちょうど 1 件で min_items=1 なら observations に single_child（観測印 note:single-child は呼び手が盤面に残す D06-f）
+  Svc->>Svc: 各項目: persona ⊆ spec.allowed_personas／title・summary・description 非空<br/>／acceptance 形式（acceptance.py の規則: `- [ ]` 1 行 1 条件・プレースホルダ禁止・10 文字以上・max_acceptance 以内。P5D-025 PoC 書式のまま）<br/>／outcome トークンが正準形 outcome/<ファイル名>（require_outcome_path なら 1 つ以上）
+    Svc->>Svc: depends_on: allow_depends_on／自分より前の index のみ／循環なし／topo 順を決める
+    Svc->>Svc: 兄弟衝突: 提案内と existing_children で title・outcome ファイル名の重複を指摘
+    Note over Svc: coverage（FN-51）は **stages では行わない** — 契約 validate_proposal(proposal, spec, existing_children) に親 acceptance を渡す引数が無い。呼び手（orchestrator）が extract_outcome_tokens を親子に掛けて突き合わせる（B-25）
+  alt 指摘あり
+    Svc-->>Gate: GateResult(ok=False, problems=[…]（差し戻しの本文に使う）)
+  else
+    Svc-->>Gate: GateResult(ok=True, problems=[], observations=[single_child?], order=topo 順)
+  end
+
+  Gate->>Svc: extract_outcome_tokens(acceptance)
+  Svc->>Svc: 正規表現で outcome/ を含むトークンを拾い、正準形でないもの（../outcome/x、絶対パス、区切り入り）は違反として原文で返す
+  Svc-->>Gate: list[str]（完了ゲート鎖の入力。ファイル名は outcome_filename() 1 箇所で切り出す）

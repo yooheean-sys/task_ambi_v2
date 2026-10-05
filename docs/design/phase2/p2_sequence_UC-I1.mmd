@@ -1,0 +1,75 @@
+%% シーケンス図 UC-I1 階層分解して遂行する（1 周回）— task_ambi_v4 第2フェーズ
+%% 出典: 04_usecase_desc.csv UC-I1／PoC 設計仕様／loop.py（PoC 基準版）／D01・D06
+%% レーン規約（D05）: アクター・ドメイン概念・外部システム。モジュール分割前なのでモジュール名は使わない
+%% 関連 DM: DM-13 issue／DM-08 段／DM-09 ペルソナ／DM-03 メンバ／DM-07 台帳／DM-14 受け入れ条件／DM-17 成果物／DM-18 実行／DM-19 実行コンテキスト
+sequenceDiagram
+  autonumber
+  participant OL as 外側ループ<br/>（実行 DM-18）
+  participant Stage as 段解決<br/>（DM-08/09）
+  participant Reg as メンバ台帳<br/>（DM-07）
+  participant Gate as 分解ゲート<br/>（機械検証）
+  participant Crew as 実行器 CrewAI<br/>（1 タスクの実行器）
+  participant BD as beads<br/>（bd CLI）
+  participant Vault as Obsidian vault
+  participant LLM as LLM API
+
+  Note over OL,BD: 前提: claim 済み issue（UC-01/02/11 から include）。実行コンテキスト DM-19 を保持
+
+  OL->>BD: bd show --json（issue・labels・parent・acceptance）
+  OL->>Stage: resolve_stage(kind ラベル × 親の有無)
+  Stage-->>OL: 段（program/project/subrequest/child/plain）＋ allowed_personas ＋ min_items
+  OL->>Reg: 実行主体 = project ラベル × persona ラベル → メンバ ID
+  Reg-->>OL: Member（bd actor / casbin subject / CrewAI フィールド role・goal・backstory・tools D16-h）
+  OL->>Vault: プロジェクトフォルダの存在検証（DM-02、D04-d）
+  alt フォルダ無し
+    Vault-->>OL: 不在
+    OL->>BD: 停止理由をコメント（黙って走らせない P3）＋ claim 解放
+  end
+
+  alt propose 段（program / project / subrequest）
+    OL->>Crew: kickoff(tasks.yaml の段テンプレート（settings 経由 IF-50 D16）, 担当一覧は allowed_personas から動的生成＝｛persona_guide｝)
+    Crew->>Vault: PJ フォルダ・役割フォルダ読取（B2: 兄弟成果物含む）
+    Crew->>LLM: 推論（Interceptor 経由・UC-12 計測）
+    LLM-->>Crew: 分解提案（items: title/summary/persona/acceptance/depends_on/outcome）
+    Crew-->>OL: 提案
+    OL->>Gate: validate_proposal（persona⊆allowed／depends_on 可否／acceptance 形式／outcome 正準形／衝突／coverage／min_items）
+    alt ゲート不合格
+      Gate-->>OL: 指摘
+      OL->>Crew: 差し戻し（同 kickoff 内で再提案）
+    else 子 1 件（min_items=1 で通過）
+      Gate-->>OL: 合格＋観測印 note:single-child（D06-f）
+    else 合格
+      Gate-->>OL: 合格
+    end
+    loop 子 issue ごと
+      OL->>BD: bd create（child_labels＋role:executor＋project:key 伝播＋persona:）actor=メンバ ID
+      BD-->>OL: child id
+    end
+    OL->>BD: 兄弟依存 B1（depends_on）／dependents 付け替え
+    alt 起票・依存張りの途中失敗
+      BD-->>OL: 部分失敗（rc は信用しない X-3）
+      OL->>BD: UNSAFE を記録・人間へ（自動再試行しない）
+    end
+    OL->>BD: 確認読取（children_of で盤面を再読）
+    OL->>BD: 親 close（子を全て起票し終えてから）
+  else execute 段（child = リーフ）
+    OL->>Crew: kickoff(tasks.yaml の child テンプレート（D16）, ペルソナ)
+    Crew->>Vault: コンテキスト読取（PJ・役割フォルダ、B2 兄弟成果物）
+    Crew->>LLM: 推論（Interceptor 経由）
+    LLM-->>Crew: 成果物本文
+    Crew->>Vault: outcome/ に書込（外縁ゲート・Windows 禁止文字ゲート）
+    Crew-->>OL: TaskOutput
+    OL->>Gate: 完了ゲート（acceptance の outcome トークン → 実ファイル存在）
+    alt 不合格
+      OL->>Crew: 差し戻し
+    end
+    OL->>Crew: レビュー kickoff（planner）
+    alt レビュー不能・行き詰まり
+      Crew-->>OL: escalate_to_human
+      OL->>BD: 【extend UC-04】kind:question 起票 → blocks → release
+    else 承認
+      OL->>BD: bd close（actor=メンバ ID）
+    end
+  end
+  OL->>BD: 確認読取 bd show（写像の反映を検証 D04-b）
+  Note over OL,LLM: 上限到達はいつでも【extend UC-12】へ。失敗は UC-13 で bd に写像

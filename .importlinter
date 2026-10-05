@@ -1,0 +1,237 @@
+# モジュール境界の依存ルール（憲章 §1・§7-5）。実行は `uv run lint-imports`。
+# 設計側の入力は docs/design/phase4/p4_importlinter.toml（TOML 断片）。本ファイルは INI 形式で、
+# 同断片から意味内容を保ったまま転記する（置き場の根拠は specs/000-workspace-foundation の DIFF-01）。
+
+[importlinter]
+root_packages =
+    api
+    ui
+    board
+    vault
+    settings
+    stages
+    monitor
+    executor
+    orchestrator
+    trigger
+    repo
+    common
+# ↑ モジュール追加時にここへ 1 行足す（登録点 2/3）
+#   実在しないパッケージ名を書くと lint-imports が
+#   "Could not find package 'X' in your Python path." で実行不能になる（検査そのものが動かなくなる）
+
+# (3) 系（外部依存の独占）の契約を初めて有効化するため必須。無いと外部パッケージ名が
+# 解決されず forbidden 契約が効かない（CLAUDE.md「モジュール追加時の登録点」2.・research R-14）
+include_external_packages = True
+
+[importlinter:contract:features-independent]
+name = features are independent (src only; tests are checked by apps/api/tests/foundation)
+type = independence
+modules =
+    board
+    vault
+    settings
+    stages
+    monitor
+    executor
+    orchestrator
+    trigger
+    repo
+# ↑ feature モジュールを追加するたびにここへ 1 行足す（登録点 2/3 の続き）
+#   src レイアウトのため tests/ は grimp のモジュールグラフに載らない。テストコードの
+#   feature 間 import は apps/api/tests/foundation/test_feature_test_imports.py が担保する
+
+[importlinter:contract:layers]
+name = layers: apps -> features -> common
+type = layers
+layers =
+    api : ui
+    board | vault | settings | stages | monitor | executor | orchestrator | trigger | repo
+    common
+# ↑ 最初の feature を追加した時点で "api : ui" と "common" の間に
+#   feature 層（"board | vault | ..."）の 1 行を挿入する（登録点 2/3 の続き）
+#   `api : ui` は「非独立の同層」。016 で apps/ui が api.create_app を呼ぶようになり
+#   （UI を app プロセスに同居させる＝ D23）、ui → api を通す必要が生じた。
+#   逆向き（api → ui）は次の ui-over-api が禁じる（contracts/import-boundaries.md §1-1・§1-3）。
+#   ⚠ ui と api を**別の行に分けない** —— REG-4 は先頭行と末尾行を除く行を feature 層と
+#   みなすので、分けると余分な ['api'] で赤くなる（016 spec §0-6-2）。
+
+[importlinter:contract:ui-over-api]
+name = apps/ui may import api; api must not import ui
+type = layers
+layers =
+    ui
+    api
+
+# (3) 系: 外部依存を独占するモジュールの限定（設計側の正本は
+# docs/design/phase4/p4_importlinter.toml）。設計側の source_modules は 16 個だが、
+# 実在するのは api・common の 2 つだけ。未作成のパッケージ名を書くと lint-imports が
+# 実行不能になるため、`000` の段階的有効化の裁定に従い実在するものだけを書く（research R-14）。
+# **forbidden 契約の source_modules は子孫を含む**（実測 F-30。casbin-scope が settings を
+# 外している理由が settings/repository.py の `import casbin` ＝サブモジュールであること）。
+# したがって settings・trigger は**サブモジュール粒度**で列挙し、`settings.ui`・`trigger.ui`（画面）と
+# `settings`・`trigger`（トップレベル）を載せない。`settings/__init__`・`trigger/__init__` が
+# `ui.py` を export しないので間接連鎖が生じず、**allow_indirect_imports は要らない**
+# （010 SD-07。005 B-14 の 5 本中 4 本目を手当てなしで閉じた）。効きは失われない —— board に
+# `import nicegui` を 1 行足すと本契約は赤くなる（016 contracts/import-boundaries.md §3 の #2）し、
+# settings.router に足しても赤くなる（#3）。
+# 016 で `streamlit-scope` を `nicegui-scope` に置き換えた（D23。source_modules は同じ列挙）。
+[importlinter:contract:nicegui-scope]
+name = nicegui only in ui pages and apps/ui
+type = forbidden
+source_modules =
+    api
+    common
+    board
+    vault
+    settings.schemas
+    settings.dependencies
+    settings.router
+    settings.service
+    settings.repository
+    settings.models
+    settings.exceptions
+    stages
+    monitor
+    executor
+    orchestrator
+    trigger.schemas
+    trigger.dependencies
+    trigger.router
+    trigger.service
+    trigger.repository
+    trigger.models
+    trigger.exceptions
+    trigger.correlation
+    repo
+forbidden_modules =
+    nicegui
+
+# 憲章 §4 注記「モジュールの UI は自 MOD の service を直接 import せず app の HTTP API 経由」を
+# 機械検査に落とす（設計側 p4_importlinter.toml の (3) 系 5 本目）。
+# **存在するモジュールの分だけ書く**（書くと lint-imports が「Could not find package」で実行
+# 不能になる＝ CLAUDE.md の root_packages の注意と同型。000 の段階的有効化の裁定に従う）。
+# **011 で trigger.ui／trigger.service／trigger.repository が実在したので設計側の契約案が
+# 全数そろった**（それまでは settings の 3 名だけだった）。
+# **allow_indirect_imports を足さない**（settings.ui も trigger.ui も自 MOD の `*` を 1 つも
+# import しない形＝ 010 SD-08・011 U-1）。
+[importlinter:contract:ui-pages]
+name = ui pages do not import their own service (HTTP only)
+type = forbidden
+source_modules =
+    settings.ui
+    trigger.ui
+forbidden_modules =
+    settings.service
+    settings.repository
+    trigger.service
+    trigger.repository
+
+# crewai を独占するのは executor。**source_modules に executor を入れない**（入れると executor
+# 自身の実装が違反になる。casbin-scope／httpx-scope と同型）。
+# allow_indirect_imports: 土台が全 feature を import するため `api.registry -> executor -> crewai`
+# の間接連鎖が必ず違反になり、実装側では解消できない。直接 import だけを見る形にする
+# （ユーザ裁定 2026-08-24 と同じ根拠。005 B-14 の 5 本中 3 本目。5 本は 011 で出そろった）。
+# 効きは失われない — board に `import crewai` を 1 行足すと本契約は赤くなる（実測＝ T038・
+# quickstart S9）。
+[importlinter:contract:crewai-scope]
+name = crewai only in executor
+type = forbidden
+source_modules =
+    api
+    ui
+    common
+    board
+    vault
+    settings
+    stages
+    monitor
+    orchestrator
+    trigger
+    repo
+forbidden_modules =
+    crewai
+allow_indirect_imports = True
+
+# casbin を独占するのは settings。**source_modules に settings を入れない**（入れると settings
+# 自身の実装が違反になる。FR-066・R-26）。
+# allow_indirect_imports: forbidden 契約は既定で**間接連鎖**を辿るため、composition root の
+# `api.registry -> settings -> casbin` が必ず違反になる（api は全 feature を import するのが役目
+# ＝ FR-068）。実装側では解消できないので、直接 import だけを見る形にする（ユーザ裁定
+# 2026-08-24）。効きは失われない — board に `import casbin` を 1 行足すと本契約は赤くなる
+# （実測。SC-012・US4 AC-8 の観測点＝ quickstart S9 #5）。設計側 p4_importlinter.toml の (3) 系
+# 5 契約のうち 4 本が同じ手当て（allow_indirect_imports）を要した（executor=crewai・
+# trigger=apscheduler/watchdog・monitor と executor=httpx・settings=casbin）。残る 1 本
+# （UI 保持 MOD と apps/ui=nicegui）だけはサブモジュール粒度の列挙で手当てなしに閉じている
+# （010 SD-07）→ specs/005-settings-read/design-sync.md B-14（5 本とも閉じた）。
+[importlinter:contract:casbin-scope]
+name = casbin only in settings
+type = forbidden
+source_modules =
+    api
+    ui
+    common
+    board
+    vault
+    stages
+    monitor
+    executor
+    orchestrator
+    trigger
+    repo
+forbidden_modules =
+    casbin
+allow_indirect_imports = True
+
+# apscheduler と watchdog を独占するのは trigger。**source_modules に trigger を入れない**
+# （所有側。crewai-scope／casbin-scope／httpx-scope と同型）。
+# allow_indirect_imports: 010 SD-07 の「所有側をサブモジュール粒度で列挙して手当てなしに
+# 閉じる」形は **trigger では使えない** —— `trigger/__init__.py` が `build` を export し、それが
+# `trigger.service` →`trigger.service.jobs` → `apscheduler` を引くので、
+# `api.registry -> trigger -> apscheduler` の間接連鎖が切れない（settings は `ui.py` を
+# export しないから切れた＝ 011 SD-16）。直接 import だけを見る形にする（ユーザ裁定
+# 2026-08-24 と同じ根拠。005 B-14 の 5 本中**最後の 1 本**がこれで閉じる）。
+# 効きは失われない — board に `import apscheduler` を 1 行足すと本契約は赤くなる（SC-014）。
+[importlinter:contract:scheduler-scope]
+name = apscheduler and watchdog only in trigger
+type = forbidden
+source_modules =
+    api
+    ui
+    common
+    board
+    vault
+    settings
+    stages
+    monitor
+    executor
+    orchestrator
+    repo
+forbidden_modules =
+    apscheduler
+    watchdog
+allow_indirect_imports = True
+
+# httpx は monitor と executor が独占する。common は TYPE_CHECKING で httpx を参照するため
+# source_modules に含めない（設計側 p4_importlinter.toml と同じ扱い。plan (vii) 2・R-23）。
+# **monitor も source_modules に入れない**（所有側。入れると monitor 自身の実装が違反になる＝ FR-071）。
+# allow_indirect_imports: casbin-scope と同型の手当て（B-14 の 5 本中 2 本目）。土台が全 feature を
+# import するため `api.registry -> monitor -> httpx` の間接連鎖が必ず違反になり、実装側では解消
+# できない。直接 import だけを見る形にする（ユーザ裁定 2026-08-24 と同じ根拠＝ FR-072）。
+# 効きは失われない — board に `import httpx` を 1 行足すと本契約は赤くなる（quickstart S8 の表 5）。
+[importlinter:contract:httpx-scope]
+name = httpx only in monitor and executor
+type = forbidden
+source_modules =
+    api
+    ui
+    board
+    vault
+    settings
+    stages
+    orchestrator
+    trigger
+    repo
+forbidden_modules =
+    httpx
+allow_indirect_imports = True

@@ -1,0 +1,166 @@
+%% executor（BC-03 分解・遂行 — CrewAI 実行器）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-48／p4 notes §1・§2（受け渡し型 executor.py: CrewSpec・CrewOutcome・CrewEvent ＋本フェーズで CrewEventKind・Escalation・ReviewVerdict・ExecutorFailure を追記）／D09-b,f／P5D-013・021・029〜033／P5D-048（P5-R1 D16。P5D-031 の置き場改訂後）／PoC renkei crew.py・tools.py（IssueSession）・casbin tools.py（RunCommandTool）（読取のみ）
+%% 記法: classDiagram。namespace common_interfaces_executor_py＝受け渡し型／executor_internal＝MOD 内部。外部実体は LLM API（ストアではない）のみで所有ストアなし
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+classDiagram
+  direction LR
+
+  namespace common_interfaces_executor_py {
+    class CrewSpec["CrewSpec（run の入力。呼び手が詰める）"] {
+      <<受け渡し型>>
+      +issue_id
+      +mode propose | execute
+      +purpose PromptPurpose work | review
+      +bundle PromptBundle
+      +member Member（CrewAI フィールド role/goal/backstory/tools/max_* 込み・llm_profile・bd_actor・casbin_subject・skills・mcps D16-h）
+      +hooks HooksConfig
+      +folders ProjectFolders
+      +parent_acceptance str | None（最終レビュー用）
+      +repos ProjectRepos | None 任意（未登録は None。CFG-74・D25）
+    }
+    class CrewOutcome["CrewOutcome（run の戻り）"] {
+      <<受け渡し型>>
+      +proposal Proposal | None（propose 時）
+      +task_output str | None（execute 時の最終出力）
+      +completed bool / completion_reason
+      +review ReviewVerdict | None（review 時）
+      +escalation Escalation | None
+      +written list~WrittenPath~
+      +events list~CrewEvent~
+      +halted bool / halted_reason FailureKind | None
+      +progress_notes int（record_progress の回数）
+    }
+    class CrewEvent["CrewEvent（中立型イベント）"] {
+      <<受け渡し型>>
+      +kind CrewEventKind
+      +at
+      +detail dict 最小（イベント名・エラー文字列の先頭・Tool 名など。crewai 型は持たない）
+    }
+    class CrewEventKind["CrewEventKind"] {
+      <<enumeration>>
+      llm_call_started
+      llm_call_completed
+      llm_call_failed
+      tool_called
+      tool_denied
+      tool_failed
+      guardrail_failed
+      agent_retry
+      summarization
+      outcome_overwritten
+      crew_completed
+      crew_failed
+    }
+    class Escalation["Escalation（escalate_to_human の申告）"] {
+      <<受け渡し型>>
+      +what_i_tried / why_stuck / decision_needed
+    }
+    class ReviewVerdict["ReviewVerdict（submit_review の申告）"] {
+      <<受け渡し型>>
+      +approved bool
+      +feedback
+      +files_read list~str~
+    }
+    class ExecutorFailure["ExecutorFailure"] {
+      <<exception>>
+      +ViolationError を継承
+      +phase build | kickoff
+      +reason crewai 例外の文字列化
+    }
+  }
+
+  namespace executor_internal {
+    class ExecutorDeps["ExecutorDeps（build の引数）"] {
+      <<frozen dataclass>>
+      +board_reader / board_writer
+      +vault_reader / outcome_writer
+      +authorizer / command_registry
+      +llm_http_hook LLMHttpHook（構築時注入 D09-b）
+    }
+    class ExecutorHandle["ExecutorHandle（build(deps, *, config=None) の戻り）"] {
+      <<frozen dataclass>>
+      +crew_executor CrewExecutor
+      +router None
+    }
+    class ExecutorConfig["executor/config.json"] {
+      <<Settings>>
+      +run_command_timeout_sec
+      +max_iter / max_rpm（agents.yaml 未指定時の既定 D16-h。④⑤が優先 CFG-52/53）
+      +event_allowlist 翻訳対象のイベント名
+      +hook_catalog 登録可能な hook 名
+      +disable_crewai_telemetry 既定 true（build 時に CREWAI_DISABLE_TELEMETRY／OTEL_SDK_DISABLED を setdefault D15-m）
+    }
+    class ApiKeyEnv["ApiKeyEnv（.env）"] {
+      <<dotenv_values の直読み>>
+      +<api_key_ref> → 実値（プロファイルごとのキー名）
+      +BaseSettings 経由にしない（空の値をキーごと落として「不在」と区別できない SD-10）
+      +OS 環境変数は見ない（憲章 §5・SD-11）。import crewai が .env を環境へ流し込むので取り除く（SD-26）
+    }
+    class RunSession["RunSession（1 run の可変状態）"] {
+      <<VO>>
+      +issue_id / member / folders
+      +proposal 申告
+      +completed / completion_reason
+      +escalation / review
+      +written list~WrittenPath~
+      +events list~CrewEvent~
+      +halted / halted_reason
+      +progress_notes int（record_progress の成功回数のみ）
+      +unknown_events Counter~str~（翻訳対象外の件数と名前。器には写さず記録にだけ残す）
+      +_lock threading.Lock（積む操作はすべてこの中。ハンドラが別スレッドで走る SD-19）
+    }
+    class GuardedTool["GuardedTool（Tool 基底）"] {
+      <<VO>>
+      +name / obj＝tool:<name>
+      +_run 前段で enforce(subject, tool:<name>, execute)
+      +vault 系は vault:<area> read|write を追加判定
+      +拒否は戻り値で指摘・events に tool_denied
+    }
+    class ToolRegistry["ToolRegistry（ToolName→GuardedTool 構築子 D16-b）"] {
+      <<VO>>
+      +registry dict~ToolName,構築子~ 12 種（kernel の ToolName 列挙がキー）
+      +resolve(names) 装備＝member.tools を bundle.task_tools が上書き（D16-a）
+      +未知名は ExecutorFailure(build)（validate で先に弾かれる想定）
+      +構築子表は tools/__init__.py から受け取る（models に置くと models→tools の参照が生じて循環する C1）
+    }
+    class InterceptorAdapter["InterceptorAdapter（BaseInterceptor 実装）"] {
+      <<VO>>
+      +on_outbound / on_inbound / aon_* → LLMHttpHook へ委譲
+    }
+    class LlmFactory["LlmFactory"] {
+      <<VO>>
+      +build(profile, adapter) LLM（鍵はフィールドに保持せずその場で読んで捨てる）
+      +resolve_api_key(profile) str（参照名が空→""／キーが無い→ExecutorFailure(build)／値が空→"" のまま続行）
+      +provider_kind で model 接頭辞を切替（openrouter は接続先の既定が自動＝ P5D-030 は解消 SD-02）
+    }
+  }
+
+  CrewOutcome "1" *-- "0..*" CrewEvent
+  CrewOutcome "0..1" *-- "0..1" Escalation
+  CrewOutcome "0..1" *-- "0..1" ReviewVerdict
+  CrewEvent --> CrewEventKind
+  RunSession ..> CrewOutcome : 終了時に写像
+  ToolRegistry ..> GuardedTool : 構築
+  GuardedTool ..> RunSession : 申告を積む
+  LlmFactory ..> InterceptorAdapter : 装着
+  LlmFactory ..> ApiKeyEnv : api_key_ref を引く
+  ExecutorHandle ..> ExecutorDeps : build
+  ExecutorHandle ..> ExecutorConfig : build が読む
+  CrewSpec ..> ToolRegistry : member.tools／bundle.task_tools（D16-a/b）
+
+  note for CrewSpec "永続化先: なし（インメモリ。呼び手が PromptBundle（task_tools 込み）・Member（CrewAI フィールド込み）・HooksConfig・ProjectFolders を詰める D16）"
+  note for CrewOutcome "永続化先: なし（インメモリ。RunMonitor.finish と呼び手のゲートの入力）"
+  note for CrewEvent "永続化先: なし（インメモリ。monitor が finish で評価 P5D-022）"
+  note for CrewEventKind "永続化先: なし（コード定数。crewai のイベント名は持ち込まない）"
+  note for Escalation "永続化先: なし（インメモリ。起票は呼び手 D09-f）"
+  note for ReviewVerdict "永続化先: なし（インメモリ。close は呼び手）"
+  note for ExecutorFailure "永続化先: なし（インメモリ）"
+  note for ExecutorDeps "永続化先: なし（インメモリ）"
+  note for ExecutorHandle "永続化先: なし（インメモリ）"
+  note for ExecutorConfig "永続化先: ファイル（executor/config.json。開発者が commit）"
+  note for ApiKeyEnv "永続化先: ファイル（リポジトリ直下 .env。秘密。executor だけが実値を読む）"
+  note for RunSession "永続化先: なし（インメモリ。run の間だけ）"
+  note for GuardedTool "永続化先: なし（コード）"
+  note for ToolRegistry "永続化先: なし（コード。装備の宣言は agents.yaml／tasks.yaml＝settings 所有 D16-a。許可は policy.csv＝別層 P5D-032）"
+  note for InterceptorAdapter "永続化先: なし（コード。crewai.BaseInterceptor を継承する唯一の場所）"
+  note for LlmFactory "永続化先: なし（コード）"

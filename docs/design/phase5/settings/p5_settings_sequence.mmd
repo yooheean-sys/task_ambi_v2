@@ -1,0 +1,60 @@
+%% settings（BC-01 設定）内部シーケンス 主図 — 実行時の読取・解決・判定（kickoff 開始時の 6 読取＋実行中の enforce／resolve_command＋回答者判定）— task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-23〜30・IF-50／p2_sequence_UC-I1.mmd 4-6・UC-07 末尾／D06-b,c,d,g／D15-j／D16／FN-10/18/19/20/21/22/26/56/57／PoC casbin authz.py・identity.py・fleet/loader.py（PoC 基準版、読取のみ）
+%% レーン規約（D11-c／P5D-003）: 呼び手＝Protocol 名／自 MOD 内部＝ファイル単位（casbin はライブラリの内部レーン）／kernel は Note のみ
+%% 主図は「読む側」。UC-07 の保存経路は p5_settings_sequence_uc07_save.mmd、UC-08 のプロジェクト CRUD は p5_settings_sequence_uc08_project.mmd
+sequenceDiagram
+  autonumber
+  participant Rd as SettingsReader／MemberResolver
+  participant Az as Authorizer／CommandRegistry
+  participant Svc as settings/service.py<br/>（SettingsService＝4 Protocol の実装。現在のスナップショットを読む）
+  participant Cas as settings/lib:casbin<br/>（Enforcer。PJ ごとに 1 つ）
+
+  Note over Svc,Cas: 前提（P5D-016）: 領域 A は build 時と保存時にだけ読み、SettingsSnapshot（不変・世代番号付き）に畳む。実行時の読取は全てスナップショット参照でファイルを触らない。<br/>保存はスナップショットの丸ごと差替え。kickoff 開始時に読む項目は CrewSpec に写るので実行中不変（FN-22）。enforce／resolve_command は差替え時点から即時に効く
+
+  Rd->>Svc: get_project(project_key)（kickoff 開始・FN-26 の前段）
+  alt 未登録（_program も UC-08 で登録が要る P5D-014）
+    Svc-->>Rd: ProjectNotFound
+  else
+    Svc-->>Rd: Project（project_key・name・folders: ProjectFolders＝vault ルート相対 P5D-009・is_reserved）
+  end
+
+  Rd->>Svc: resolve(project_key, persona_key)（実行主体の確定 FN-19）
+  Svc->>Svc: agents[project_key][persona_key]（PJ）と agents_global[persona_key] を④→⑤でフィールド単位 merge（リスト型は丸ごと置換 D16-d）→ 台帳（DM-07）から bd_actor／casbin_subject を導出（member_id＝<project_key>.<persona_key>）
+  Svc->>Svc: llm_profile: PJ の llm → global の llm → llm_profiles.yaml の default の順に解決（D16-h）。threshold_T＝context_window − context_reserve_tokens（config.json）を導出（P5D-013）
+  alt メンバ未作成（PJ agents.yaml にキーが無い。allowed_personas に居ても実行できない FN-55）
+    Svc-->>Rd: MemberNotFound
+  else
+    Svc-->>Rd: Member（member_id・role・goal・backstory・bd_actor・casbin_subject・llm_profile: LLMProfile・tools・skills・mcps・max_iter・max_rpm・max_execution_time D16-h）
+  end
+
+  Rd->>Svc: get_limits(project_key)
+  Svc->>Svc: global 既定に PJ 上書き（任意）を重ねて解決（D06-g）
+  Svc-->>Rd: LimitPolicy（max_requests_per_kickoff・max_cost_per_kickoff・scope）
+  Rd->>Svc: get_rules(project_key)
+  Svc-->>Rd: Rules（project_rules＝projects/<key>/rules.md の本文のみ D16-h。役割ルールは Member.backstory に吸収済み。合成は stages）
+  Rd->>Svc: get_tasks(project_key)（IF-50 D16-h）
+  Svc-->>Rd: TaskTemplates（7 キー。global/tasks.yaml→projects/<key>/tasks.yaml のキー単位上書き適用済み・世代付き。orchestrator が stages の build_prompt に引数で渡す）
+  Rd->>Svc: get_hooks(project_key)
+  Svc-->>Rd: HooksConfig（hooks[]: name・points・agents 絞り込み。登録は executor）
+
+  Note over Rd,Cas: ここまでが kickoff 開始時。以下は kickoff 中に Tool から呼ばれる
+
+  Az->>Svc: enforce(subject, obj, act)（Tool 前段判定 FN-18）
+  Svc->>Cas: enforcers[project_of(subject)].enforce(subject, obj, act)
+  Cas-->>Svc: bool（policy.csv の p 行＋g 行、keyMatch）
+  Svc-->>Az: bool（PJ が引けない subject は False。黙って許可しない P3）
+
+  Az->>Svc: resolve_command(name)（run_command の二段判定の「何が実行可能か」側）
+  alt 定義なし
+    Svc-->>Az: UnknownCommand
+  else
+    Svc-->>Az: argv: list[str]（global/commands.yaml の固定 argv。shell=False・引数は AI に渡させない D07-e）
+  end
+
+  Rd->>Svc: is_human(actor)（回答者判定 FN-10）
+  Svc->>Svc: 台帳: bd_actor 集合（members から導出）に含まれれば AI → False／human_actors（global/humans.yaml P5D-019）に含まれれば True
+  alt 台帳外の actor
+    Svc-->>Rd: False＋構造化ログに「台帳外 actor」の印（黙って人間に倒さない D06-c）
+  else
+    Svc-->>Rd: bool
+  end

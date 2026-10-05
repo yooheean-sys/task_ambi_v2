@@ -1,0 +1,189 @@
+%% common（共有カーネル kernel）のデータ構造 — task_ambi_v4 第5フェーズ
+%% 位置付け: MOD ではない。全 MOD が参照する列挙・共通例外の基底・log 基盤・ルート設定の読み口の型（D09-d／DEC-002／D11-d／DIFF-05）
+%% 置き場: packages/common/src/common/kernel/{enums.py, errors.py, log.py, config.py}。受け渡し型 37 件（＋提供 MOD 固有の列挙 9 件）と
+%%   Protocol は kernel ではなく common/interfaces/<提供 MOD>.py にあり、属性は各 MOD の p5_<MOD>_data_model.mmd（namespace common_interfaces_<MOD>_py）が正本
+%% 永続化先の注記規約（D11-g (v)）: note for <Class> "永続化先: <Obsidian|beads|GitLab|ファイル|なし>（限定）…"
+%% 裁定: P5D-001（例外基底の階層）／P5D-002（ラベル語彙の表現）／P5D-045（ToolName 列挙 D16-b）・P5D-050（LoggerFactory マスク D15-i）— p5_decision_log.csv
+classDiagram
+  direction LR
+
+  namespace common_kernel_enums_py {
+    class PersonaKey["PersonaKey（DM-09 のキー）"] {
+      <<enumeration>>
+      planner
+      project_lead
+      system_engineer
+      doc_lead
+      architect
+      programmer
+      analyst
+      writer
+      general
+    }
+    class StageName["StageName（DM-08 の段名）"] {
+      <<enumeration>>
+      program
+      project
+      subrequest
+      child
+      plain
+    }
+    class ToolName["ToolName（Tool 登録名。D16-b）"] {
+      <<enumeration>>
+      read_issue
+      record_progress
+      list_input_files
+      read_input_file
+      list_outcome_files
+      read_outcome_file
+      escalate_to_human
+      propose_breakdown
+      write_outcome
+      complete_issue
+      run_command
+      submit_review
+      list_repo_files
+      read_repo_file
+      write_repo_file
+      delete_repo_file
+    }
+    class KindLabel["KindLabel（kind 次元の値）"] {
+      <<enumeration>>
+      program
+      request
+      subrequest
+      child
+      question
+    }
+    class StateLabel["StateLabel（state 次元の値・排他）"] {
+      <<enumeration>>
+      working
+      failing
+    }
+    class LabelDim["LabelDim（ラベル次元の接頭辞）"] {
+      <<enumeration>>
+      kind
+      project
+      persona
+      role
+      state
+      note
+    }
+    class Labels["Labels（ラベル語彙の組立関数群）"] {
+      <<module>>
+      +kind(KindLabel) str
+      +project(project_key) str
+      +persona(PersonaKey) str
+      +role_executor() str
+      +state(StateLabel) str
+      +note(name) str
+      +parse(label) tuple~LabelDim,str~ | None
+    }
+  }
+
+  namespace common_kernel_errors_py {
+    class AppError["AppError（全契約例外の基底）"] {
+      <<exception>>
+      +message
+      +cause 任意
+    }
+    class NotFoundError["NotFoundError"] {
+      <<exception>>
+      +IssueNotFound／ProjectNotFound／MemberNotFound／VaultNotFound／UnknownCommand／UnknownStage／UnknownPersona の基底
+    }
+    class UnavailableError["UnavailableError"] {
+      <<exception>>
+      +BoardUnavailable の基底（外部ツール不達）
+    }
+    class UnverifiedError["UnverifiedError"] {
+      <<exception>>
+      +BoardWriteUnverified／MappingUnverified の基底（確認読取の不一致 P3）
+    }
+    class ViolationError["ViolationError"] {
+      <<exception>>
+      +VaultPathViolation／KickoffBusy／ExecutorFailure の基底（規則違反・実行失敗）
+    }
+  }
+
+  namespace common_kernel_config_py {
+    class RootConfig["RootConfig（ルート config.json の読み口。CFG-14〜21）"] {
+      <<VO>>
+      +app_name
+      +env_label
+      +log LogConfig
+      +enabled_modules list~str~
+      +defaults DefaultsConfig
+    }
+    class LogConfig["LogConfig（root.log。CFG-16〜19）"] {
+      <<VO>>
+      +level DEBUG | INFO | WARNING | ERROR 既定 INFO
+      +format json | text 既定 json
+      +correlation_header 既定 X-Correlation-ID
+      +redact_keys list~str~ 既定 *_API_KEY*・Authorization・api_key
+    }
+    class DefaultsConfig["DefaultsConfig（root.defaults。CFG-21）"] {
+      <<VO>>
+      +encoding 既定 utf-8
+    }
+  }
+
+  namespace common_kernel_log_py {
+    class CorrelationContext["CorrelationContext（contextvar）"] {
+      <<module>>
+      +correlation_id ContextVar~str | None~
+      +bind(correlation_id) Token
+      +reset(Token)
+      +current() str | None
+    }
+    class LogFields["LogFields（構造化ログの共通項目）"] {
+      <<VO>>
+      +ts
+      +level
+      +module MOD 名
+      +correlation_id
+      +event 短い識別子
+      +kickoff_id 任意
+      +issue_id 任意
+      +extra dict
+    }
+    class LoggerFactory["LoggerFactory"] {
+      <<module>>
+      +get_logger(module) Logger
+      +correlation_id を自動付与
+      +マスクフィルタ root.log.redact_keys（*_API_KEY*・Authorization・api_key。message と extra の両方 D15-i (2)）
+      +crewai／litellm／httpx ロガは WARNING 以上に固定
+    }
+  }
+
+  NotFoundError --|> AppError
+  UnavailableError --|> AppError
+  UnverifiedError --|> AppError
+  ViolationError --|> AppError
+  Labels ..> KindLabel : 組立
+  Labels ..> StateLabel : 組立
+  Labels ..> PersonaKey : 組立
+  Labels ..> LabelDim : parse
+  LoggerFactory ..> CorrelationContext : 読む
+  LoggerFactory ..> LogFields : 出力形
+  LoggerFactory ..> RootConfig : 水準・形式・伏字キーを読む
+  RootConfig *-- LogConfig
+  RootConfig *-- DefaultsConfig
+
+  note for PersonaKey "永続化先: なし（コード定数）。DM-09 本文（role/goal/backstory）は settings 所有の global/agents.yaml（D16。D08 Q2 を改訂）。settings の validate・UI はこのキー列挙に照合する"
+  note for StageName "永続化先: なし（コード定数）。段の構造属性（DM-08）は stages 所有。段テンプレート本文（DM-27）は settings 所有の global/tasks.yaml（D16）"
+  note for ToolName "永続化先: なし（コード定数）。executor が GuardedTool 登録のキーに、settings が agents.yaml／tasks.yaml の tools 検査に使う（D16-b。装備の意味論・実装は executor）"
+  note for KindLabel "永続化先: なし（コード定数）。kind:question は DM-15、kind:child はリーフ（PoC config.py CHILD_STAGE）"
+  note for StateLabel "永続化先: なし（コード定数）。bd の 1 次元 1 値の状態次元。付け外しは board 経由のみ（loop.py:68-69 の規律を継承）"
+  note for LabelDim "永続化先: なし（コード定数）。note の値語彙（single-child 等）は stages／orchestrator が持ち kernel に列挙しない（D09-d 意味論を common に漏らさない）"
+  note for Labels "永続化先: なし（コード定数）。文字列リテラルの組立と分解のみ。何をもって残骸／未回答とみなすかは board／orchestrator（D09-d）"
+  note for AppError "永続化先: なし（インメモリ）。RunHalted は BaseException 直系で本階層に入れない（Z-6、common/interfaces/monitor.py）"
+  note for NotFoundError "永続化先: なし（インメモリ）。各具象は提供 MOD の interfaces ファイルで定義し本基底を継承"
+  note for UnavailableError "永続化先: なし（インメモリ）"
+  note for UnverifiedError "永続化先: なし（インメモリ）。停止痕跡は構造化ログに残す（D06-k）"
+  note for ViolationError "永続化先: なし（インメモリ）"
+  note for CorrelationContext "永続化先: なし（インメモリ）。入口（trigger／orchestrator の router）が bind し Protocol 引数に持たせない（D08-d／D09-e／憲章 §6）"
+  note for LogFields "永続化先: なし（構造化ログは stdout／ファイルへ出力＝憲章 §6。システムは読み戻さない）"
+  note for LoggerFactory "永続化先: なし（コード）。全 MOD はこれ経由でのみログを出す"
+  note for RootConfig "永続化先: ファイル（リポジトリルート config.json。読取のみ・環境変数で上書きしない）。apps/api・ui・common の 3 者が同じ口から読む（憲章 §5・CFG-14〜21・DIFF-05）"
+  note for LogConfig "永続化先: ファイル（リポジトリルート config.json の root.log。読取のみ）。LoggerFactory が水準・形式・伏字キーを読む（CFG-16〜19・D15-i (2)）"
+  note for DefaultsConfig "永続化先: ファイル（リポジトリルート config.json の root.defaults。読取のみ）。MOD config.json の同名キーが優先（CFG-21）"

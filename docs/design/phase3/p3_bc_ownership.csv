@@ -1,0 +1,89 @@
+id,種別,名称,所有BC,参照BC,根拠
+STORE-01,STORE,設定ファイル領域 A（PJ・agents.yaml＝メンバ・ペルソナ本文・tasks.yaml＝段テンプレート・policy・rules・hooks・LLM プロファイル・上限・コマンド定義 D16）,BC-01,,憲章 §2 所有 1 つ／D07-e（コマンド定義は設定モジュールのみ所有）／D08-c
+STORE-02,STORE,設定ファイル領域 B（トリガー定義。宣言＋起動時再登録）,BC-06,,D07-a／憲章 §2
+STORE-03,STORE,beads（bd CLI 経由のみ・指定ツール＝アダプタ）,BC-02,,憲章 §2 指定ツール／D08-a
+STORE-04,STORE,Obsidian vault（PJ 入力フォルダ・役割フォルダの読取、PJ フォルダ/outcome/ の書込、存在検証）,BC-04,,憲章 §2 vault 領域の所有 1 つ／D06-a／D08-a
+STORE-05,STORE,実行履歴 csv（追記のみ・ログ扱い・UI 表示にのみ読む）,BC-06,,D07-b
+STORE-06,STORE,DL フォルダ（監視対象。読取のみ・投下ファイルは消費しない）,BC-06,,D06-h／付録トリガー §3
+DM-01,DM,プロジェクト（集約ルート）,BC-01,BC-03;BC-02,D06-a／notes §0
+DM-02,DM,フォルダ対応付け,BC-01,BC-03;BC-04,D04-d／D08-a（vault の実体アクセスは BC-04）
+DM-03,DM,メンバ,BC-01,BC-03,D06-b／D07-f；D16（実体は projects/<key>/agents.yaml）
+DM-04,DM,権限ポリシー,BC-01,BC-03,D08-c（enforce は BC-01 の Protocol）
+DM-05,DM,ルール,BC-01,BC-03,D06-e（backstory 合成は BC-03 が受け取る）。role_rules は D16 で廃止（agents.yaml backstory に吸収）
+DM-06,DM,hooks 設定,BC-01,BC-03,
+DM-07,DM,メンバ台帳（保存時に導出）,BC-01,BC-03,D06-c／D08-c（FN-10 の照合は BC-03 が Protocol で行う）
+DM-08,DM,段,BC-03,common(段名の列挙),D08-b（キー列挙のみ共有カーネル。min_items は BC-03 モジュール config.json）。テンプレート本文は DM-27＝BC-01（D16）
+DM-09,DM,ペルソナ,BC-01,common(persona_key の列挙・段所属);BC-03,D16（本文 role/goal/backstory は global/agents.yaml＝領域 A。D08-b の一部を覆す。BC-03 は Member として引数で受ける）
+DM-11,DM,LLM プロファイル,BC-01,BC-03;BC-05,"D06-d,g（T は BC-01 が導出し kickoff 時に BC-03→BC-05 へ渡る）"
+DM-12,DM,上限ポリシー,BC-01,BC-03;BC-05,D06-g
+DM-13,DM,issue（集約ルート）,BC-02,BC-03;BC-05;BC-01;BC-06,D08-a（BC-01 は削除ガード読取、BC-06 は起動条件の対象）
+DM-14,DM,受け入れ条件,BC-02,BC-03,D03-a（ゲート判定は BC-03）
+DM-15,DM,質問 issue,BC-02,BC-03,D04-c／FN-08
+DM-16,DM,コメント,BC-02,BC-03;BC-05,D06-i（封筒の書込は BC-05→BC-02）
+DM-17,DM,成果物,BC-04,BC-03,D07-c／FN-11〜13
+DM-18,DM,実行 kickoff,BC-03,BC-06;BC-05,D08-d（結果は BC-06 が履歴化）
+DM-19,DM,実行コンテキスト,BC-03,BC-06;common(受け渡し型),D08-d（X2: 所有 BC-03・生成は起動元・型は common）
+DM-20,DM,計測,BC-05,BC-03,FN-40
+DM-21,DM,失敗イベント,BC-05,BC-02;BC-06,D06-i（F/W は BC-02 へ写像、I は BC-06 の履歴へ）
+DM-22,DM,トリガー定義（集約ルート）,BC-06,BC-03,D07-a／D08-d（DM-19 の trigger_snapshot は値コピー）
+DM-23,DM,起動条件,BC-06,BC-03,D06-h（claim フィルタとして BC-03 に渡す）
+DM-24,DM,実行履歴,BC-06,,D07-b
+DM-25,DM,watcher 状態,BC-06,,付録トリガー §5
+DM-26,DM,コマンド定義,BC-01,BC-03,D07-e／D08-c（BC-03 の Tool は resolve_command 経由でのみ届く）
+FN-01,FN,統括 issue 起票口,BC-02,BC-03,起票は人間の bd CLI（D07-d）＝システム外。ラベル規約の正本は BC-02
+FN-02,FN,プロジェクト／WS 直接起票口,BC-02,BC-03,同上。段の解決は BC-03
+FN-04,FN,段の解決 resolve_stage,BC-03,,D08-b
+FN-05,FN,ラベル規約と子への伝播,BC-03,BC-02,子起票時の付与は BC-03。ラベル語彙定数の置き場は D08 §6
+FN-06,FN,起票時ガイド,BC-02,,文書（プロンプト層）。語彙の正本 BC-02
+FN-07,FN,人間の追加指示の検出と注入,BC-03,BC-02;BC-01,次 claim 時にコメント読取（BC-02）→ actor 照合（BC-01）→ 注入
+FN-08,FN,エスカレーション起票（kind:question）,BC-03,BC-02,create→dep→release の順序は BC-03 が指示、実行は BC-02
+FN-09,FN,回答受け取り口（コメント→close の 2 手分離）,BC-02,BC-06,beads の blocks 解除で ready 浮上。再開は BC-06 の既定トリガー（D04-c）
+FN-10,FN,回答者の人間／AI 判定（台帳照合）,BC-03,BC-01;BC-02,D08-c
+FN-11,FN,outcome/ 書込境界,BC-04,,FN-11
+FN-12,FN,ファイル名禁止文字の書込前ゲート,BC-04,,D07-c
+FN-13,FN,read_outcome_file の不在検出,BC-04,,
+FN-14,FN,タスクの取り下げ動線,BC-03,BC-02;BC-06,据え置き（UC-06）。所有は暫定
+FN-15,FN,AI 設定の一覧・CRUD,BC-01,,
+FN-16,FN,設定 validate（順方向）,BC-01,,
+FN-17,FN,設定 validate（逆方向）,BC-01,,
+FN-18,FN,run_command の二段許可,BC-03,BC-01,Tool 実装は BC-03。enforce・resolve_command は BC-01 Protocol（D08-c）
+FN-19,FN,メンバ ID・台帳の導出,BC-01,,
+FN-20,FN,LLM プロファイルとメンバ単位割当,BC-01,BC-03;BC-05,
+FN-21,FN,上限ポリシー,BC-01,BC-05,
+FN-22,FN,設定変更の反映タイミング,BC-03,BC-01,kickoff 時に読むのは BC-03
+FN-23,FN,メンバモデル設計案の残り,BC-01,BC-03,委譲は BC-03 側の CrewAI 機構。要否は M1
+FN-24,FN,プロジェクト登録,BC-01,BC-04,登録時のフォルダ存在確認は BC-04 Protocol
+FN-25,FN,project_key のキー規則検査,BC-01,,
+FN-26,FN,フォルダ実行時存在検証,BC-03,BC-04;BC-01;BC-02,検証実体は BC-04、停止と理由書きは BC-03
+FN-27,FN,プロジェクト削除ガード,BC-01,BC-02,open issue の有無は BC-02 Protocol
+FN-29,FN,トリガー CRUD,BC-06,,
+FN-30,FN,既定トリガー「ready 巡回」,BC-06,,
+FN-31,FN,起動条件（claim フィルタ）,BC-06,BC-03,BC-03 に渡す
+FN-32,FN,手動実行 POST /triggers/{id}/run,BC-06,,
+FN-33,FN,実行中ジョブを持つトリガーの削除,BC-06,,
+FN-34,FN,トリガー一覧・実行履歴・watcher 生死の表示,BC-06,,
+FN-35,FN,常駐 daemon,BC-06,,flock・systemd は apps 層（憲章 §4）。scheduler／watcher／REST は BC-06
+FN-36,FN,ファイル投下の監視と書き込み完了検知,BC-06,,X7（完了検知の実装の所在）は未特定のまま
+FN-37,FN,実行コンテキスト（blame）の貫通,BC-03,BC-06;common,D08-d（X2）
+FN-38,FN,起動時回収 recover_orphans,BC-03,BC-02,D08-e
+FN-39,FN,外側ループ,BC-03,BC-02,
+FN-40,FN,Interceptor,BC-05,BC-03,上限値・T は kickoff 時に BC-03 から受領
+FN-41,FN,三層リトライの積の見積もり,BC-05,BC-03;BC-01,設計知識。内側リトライ設定は BC-03、上限値は BC-01
+FN-42,FN,失敗検出器,BC-05,,
+FN-43,FN,失敗等級付けと封筒,BC-05,,
+FN-44,FN,bd への失敗写像,BC-05,BC-02,
+FN-45,FN,写像の確認読取と不達時の停止,BC-02,BC-03;BC-05,確認読取の実体は BC-02。停止判断は呼び手
+FN-46,FN,段別テンプレートと担当一覧の動的生成,BC-03,BC-01,D16（テンプレートは BC-01 の tasks.yaml。BC-03 は引数で受けて充填）
+FN-47,FN,分解提案の機械検証 validate_proposal,BC-03,,
+FN-48,FN,min_items の段属性化,BC-03,,BC-03 モジュール config.json で上書き
+FN-49,FN,順序不変条件,BC-03,BC-02,
+FN-50,FN,リーフ実行,BC-03,BC-04;BC-02,
+FN-51,FN,coverage 連鎖,BC-03,,
+FN-52,FN,実物照合ゲート,BC-03,BC-04,D08-f: 否・据え置き。置くなら BC-03 完了ゲート鎖＋BC-04 抽出 Protocol
+FN-53,FN,コマンド定義の CRUD,BC-01,,
+FN-54,FN,validate: policy の cmd: ⊆ コマンド定義,BC-01,,
+FN-55,FN,メンバの手動 CRUD,BC-01,common(persona_key),
+DM-27,DM,段テンプレート,BC-01,BC-03,D16（実体 tasks.yaml＝領域 A。BC-03 は TaskTemplates として引数で受ける）
+FN-56,FN,agents.yaml のロードと 2 段 merge,BC-01,,D16-d
+FN-57,FN,tasks.yaml のロードと段テンプレート提供,BC-01,BC-03,D16-a/c/h（IF-50）
+FN-58,FN,領域 A の出荷時既定の生成,BC-01,,D16-g（settings/defaults/ からコピー）

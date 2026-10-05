@@ -1,0 +1,44 @@
+%% アクティビティ図 (3/4): 無人起動 — UC-11（タイマ / ファイル投下 → 冪等ガード → 外側ループ）
+%% 出典: 04_usecase_desc.csv UC-11 / 付録：トリガー実行機能の設計 §1・§3・§6・未決 / 設計判断_V4-D01 / loop.py recover_orphans（PoC 基準版）
+%% 要点: 起動理由（timer/file/manual）を blame として貫通させる。冪等ガードは D01 裁定（子が既にいる親は再投入せず人間へ）。
+%%       再開の起点は本図の 1 系統のみ（既定 interval トリガー「ready 巡回」を含む）。watch モードは持たない（D04-c、E6 解消）。
+flowchart TD
+  T1([⏱ タイマ発火<br/>cron / interval]) --> C0
+  T0([🔁 ready 巡回<br/>interval 既定トリガー・常設]) --> C0
+  T2([📄 ファイル投下を検知<br/>watchdog PollingObserver on /mnt/c]) --> W1{書き込み完了?<br/>完了検知}
+  W1 -- 未完 --> W1
+  W1 -- 完了 --> C0
+  T3([手動実行<br/>POST /triggers/id/run]) --> C0
+
+  C0[実行コンテキストを記録<br/>起動種別 timer / file / manual → blame] --> G1{同一ジョブが実行中?<br/>max_instances=1}
+  G1 -- 実行中 --> SK[coalesce: スキップ<br/>履歴に記録]
+  G1 -- なし --> R1[起動時回収 recover_orphans<br/>自 actor の in_progress を列挙]
+
+  R1 --> R2{残骸 issue ごとの判定}
+  R2 -- 未回答の質問待ち<br/>create→dep→release の途中死 --> R3[触らない]
+  R2 -- 子が既にいる<br/>D01 冪等ガード --> R4[release せず人間へ<br/>エスカレーション UC-04]
+  R2 -- attempts ≥ 上限 --> R5[エスカレーション UC-04<br/>failing マーク]
+  R2 -- 回復可 --> R6[コメント付与 → failing → release → ready]
+
+  R3 --> X0
+  R4 --> X0
+  R5 --> X0
+  R6 --> X0
+
+  X0{撤退 stoppage 状態の<br/>issue を除外?<br/>【未決】} --> L1[外側ループ bd ready --claim<br/>role:executor で絞る]
+  L1 --> L2{claim できた?}
+  L2 -- いいえ --> H1[履歴: 対象なし]
+  L2 -- はい --> L3[[UC-I1 階層分解して遂行]]
+  L3 --> H2[履歴に記録<br/>実行ID / 開始終了 / duration / status / blame]
+  H1 --> END([次の発火を待つ])
+  H2 --> END
+  SK --> END
+
+  %% 未決・未検証
+  N1[/【未検証】PollingObserver の取りこぼし特性下で<br/>書き込み完了検知が破綻しないか（統合テスト未実施）/]
+  W1 -.-> N1
+
+  classDef note fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 3;
+  classDef guard fill:#e8f5e9,stroke:#2e7d32;
+  class N1 note;
+  class R4 guard;

@@ -1,0 +1,68 @@
+%% settings（BC-01 設定）内部シーケンス 副図 — UC-08 プロジェクトの登録・編集・削除（キー規則 → フォルダ存在確認（VaultReader）→ 保存／削除ガード（BoardReader））— task_ambi_v4 第5フェーズ
+%% 出典: p2_sequence_UC-08.mmd／D04-d,e／D06-a,b,j／D07-f,g／FN-24/25/27／IF-09・IF-32
+%% 登録・編集・削除時のエラーは UI に返し beads には書かない（D07-g）。フォルダ実体は人間所有で settings は作らない
+sequenceDiagram
+  autonumber
+  actor Me as 自分
+  participant UI as settings/ui.py<br/>（Streamlit: プロジェクトページ）
+  participant R as settings/router.py
+  participant Svc as settings/service.py
+  participant V as VaultReader
+  participant B as BoardReader
+  participant Repo as settings/repository.py
+  participant A as 設定ファイル領域 A
+
+  Me->>UI: 登録（project_key・name・PJ 入力フォルダ・役割フォルダ（persona→パス）・outcome/。パスは vault ルート相対 P5D-009）
+  UI->>R: POST /settings/projects（HTTP）
+  R->>Svc: create_project(spec)
+  Svc->>Svc: キー規則（FN-25）: . / \ : と空白を禁止・重複禁止・先頭 _ は予約（_program のみ許す P5D-014）
+  alt キー規則違反／重複
+    Svc-->>R: SettingsValidationError → 422
+    R-->>UI: エラー（禁止文字／重複）を表示
+  else
+    Svc->>V: check_project_folders(ProjectFolders)（IF-32）
+    V-->>Svc: FolderCheck
+    alt missing あり
+      Svc-->>R: SettingsValidationError（不在パス一覧）→ 422
+      R-->>UI: どのパスが無いかを表示（beads には書かない D07-g）
+    else
+      Svc->>Repo: projects/<key>/project.yaml を書き、agents.yaml（空＝メンバ 0）・policy.csv（空）を用意（tasks.yaml・rules.md は任意・生成しない D16-h）
+      Repo->>A: 一時ファイル → os.replace
+      Svc->>Svc: スナップショット差替え
+      Svc-->>R: 200
+      R-->>UI: 登録完了（以後 project:<key> ラベルで起票できる。メンバは UC-07 で手動作成 D07-f）
+    end
+  end
+
+  Me->>UI: 編集（手動改名後の付け替え。対応付けのみ、フォルダ実体は触らない）
+  UI->>R: PUT /settings/projects/{key}
+  R->>Svc: update_project(spec)
+  Svc->>V: check_project_folders(新 ProjectFolders)
+  Note over Svc,V: **編集でも実在確認を呼ぶ**（DIFF-14 は解決済み。機能一覧の要約との食い違いは本図が正）
+  alt 新パス不在
+    Svc-->>R: 422 → UI に表示
+  else
+    Svc->>Repo: project.yaml 更新 → スナップショット差替え
+    Svc-->>R: 200
+  end
+
+  Me->>UI: 削除（対応付けの解除）
+  UI->>R: DELETE /settings/projects/{key}
+  R->>Svc: delete_project(key)
+  alt key が予約（_program）
+    Svc-->>R: **409**（削除不可。openapi.yaml の DELETE は 204／404／409 のみ＝ 010 SD-03）
+  else
+    Svc->>B: has_open_issues(key)（IF-09。project:<key> の open issue の有無を読むだけ）
+    B-->>Svc: bool
+    alt open issue あり（または BoardUnavailable）
+      Svc-->>R: **409** 拒否（理由: 参照先の無い issue を作らない。先に bd で close する）
+      Note over Svc,B: **BoardUnavailable も同じ 409**（拒否側に倒れる D06-j(4)。真偽を推測しない・再試行しない）。候補の検査に落ちたときも **409**（正本に検査違反の受け皿が無いので Detail の単一文字列になる＝ 010 SD-03）
+      R-->>UI: 拒否＋理由を表示
+    else
+      Svc->>Repo: **global/limits.yaml の overrides から当該キーを落として**から（plan D-k。上限の上書きだけが PJ の外にある） projects/<key>/ を丸ごと退避（<SETTINGS_ROOT>/_archive/projects/<key>.<UTC stamp>/）→ 台帳から当該 PJ のメンバ・policy を除去
+      Repo->>A: rename
+      Svc->>Svc: スナップショット差替え
+      Svc-->>R: 200
+      R-->>UI: 解除完了（フォルダ実体はその後に人間が消す）
+    end
+  end

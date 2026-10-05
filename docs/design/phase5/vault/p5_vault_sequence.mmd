@@ -1,0 +1,73 @@
+%% vault（BC-04 成果物）内部シーケンス 主図 — 1 kickoff で vault が受ける呼び出し列（存在検証 → 入力列挙・読取 → 成果物書込（ゲート鎖・退避・原子的書込）→ 完了ゲート）— task_ambi_v4 第5フェーズ
+%% 出典: p4_module_contract.csv IF-31〜37／p2_sequence_UC-I1.mmd（execute 段）／D04-d／D06-a／D07-c／FN-11/12/13/26/50/51／OB-4〜OB-13／PoC renkei tools.py:540-660・casbin safefs.py（PoC 基準版、読取のみ）
+%% レーン規約（D11-c／P5D-003）: 呼び手＝Protocol 名／自 MOD 内部＝ファイル単位／外部＝Obsidian vault（/mnt/c 経由の実ファイル）。kernel（LoggerFactory）は Note のみ
+sequenceDiagram
+  autonumber
+  participant Reader as VaultReader
+  participant Writer as OutcomeWriter
+  participant Svc as vault/service.py<br/>（VaultService＝両 Protocol の実装。ゲート鎖）
+  participant Repo as vault/repository.py<br/>（FsAdapter: 解決・列挙・原子的書込・退避）
+  participant FS as Obsidian vault
+
+  Note over Svc,FS: 共通（vault-F01）: ProjectFolders のパスは vault ルート相対（P5D-009）。Repo が VAULT_ROOT（.env）と結合し symlink 解決後の実パスが<br/>ルート内かつ宣言された領域（pj_input／role／outcome）内にあることを毎回検査（P1 外縁）。外れれば VaultPathViolation。包含は**実体の同一性（inode）**で判定し文字列比較を使わない（大文字小文字の区別に依存しない）
+
+  Reader->>Svc: check_project_folders(folders: ProjectFolders)（kickoff 時 FN-26／登録時 FN-24）
+  loop pj_input_dir・role_dirs[*]・outcome_dir
+    Svc->>Repo: resolve(rel) → is_dir?
+    Repo->>FS: stat
+  end
+  Svc-->>Reader: FolderCheck(missing=[…])（空＝OK。作らない: フォルダ実体は人間所有）
+
+  Reader->>Svc: list_inputs(folders, role)
+  alt role が role_dirs に無い
+    Svc-->>Reader: VaultNotFound(role)
+  else
+    Svc->>Repo: walk(pj_input_dir) ／ walk(role_dirs[role]) ／ walk(outcome_dir)（B2 兄弟成果物）
+    Repo->>FS: 再帰列挙（ファイルのみ。_archive/・ドット始まり・symlink のフォルダ・宣言された他の領域の根＝枝刈りを除外。既定構成では outcome が pj_input の内側にあるため枝刈りが無いと二重に返る）
+    FS-->>Repo: 実パス一覧
+    Svc-->>Reader: list[FileRef]（area・rel_path＝vault ルート相対・name・size・mtime。OB-6: rel_path をそのまま AI に渡せる）
+  end
+
+  Reader->>Svc: read_input(folders, ref: FileRef)
+  Svc->>Repo: resolve(ref.rel_path) と ref.area の領域内検査（FileRef を信用せず再解決）
+  alt 実在しない
+    Svc-->>Reader: VaultNotFound
+  else 領域外／非 UTF-8／サイズ超過
+    Svc-->>Reader: VaultPathViolation（P5D-011: P1 ゲート違反全般）
+  else
+    Repo->>FS: read_text(utf-8)
+    Svc-->>Reader: str
+  end
+
+  Writer->>Svc: write_outcome(folders, filename, content)（FN-11）
+  Svc->>Svc: ファイル名ゲート（vault-F07・FN-12）: 区切り文字・Windows/mac 禁止文字・制御文字・予約語・末尾ドット/空白・Obsidian タイトル禁止 # ^ [ ] | と %%・ドット始まり・空名・_archive（完全一致）・長さ。違反は全件集める
+  alt ゲート不合格
+    Svc-->>Writer: VaultPathViolation（違反した文字を明示。黙って置換しない）
+  else
+    Svc->>Svc: 内容ゲート: 空でない・max_outcome_bytes 以内
+    Svc->>Repo: resolve(outcome_dir/filename)（外縁）
+    alt 既存ファイルあり
+      Svc->>Repo: archive(target)（P5D-008）
+      Repo->>FS: mkdir outcome/_archive/（初回のみ・1 階層）→ os.replace(target, outcome/_archive/<filename>.<UTC stamp>)。stamp は YYYYMMDDThhmmssZ（%Y%m%dT%H%M%SZ）。同一スタンプが在れば -2・-3 … の連番（上限 999）で旧版を上書きしない
+    end
+    Svc->>Repo: write_atomic(target, content)
+    Repo->>FS: 一時ファイル .vaulttmp-<hex>（**書込先と同一ディレクトリ**・ドット始まりなので一覧に出ない）に書く → os.replace（同一 FS 上で原子的。FS をまたぐと EXDEV）
+    Svc-->>Writer: WrittenPath(rel_path・bytes・overwritten・archived_to)（呼び手が上書きを issue に観測印として残す）
+  end
+
+  Reader->>Svc: read_outcome_file(folders, filename)（B2 読取 FN-13）
+  Svc->>Svc: ファイル名ゲート
+  Svc->>Repo: resolve(outcome_dir/filename)
+  alt 不在
+    Svc-->>Reader: VaultNotFound（不在＝区別可能な戻り。黙って空を返さない）
+  else
+    Repo->>FS: read_text(utf-8)
+    Svc-->>Reader: str
+  end
+
+  Reader->>Svc: outcome_exists(folders, filename)（完了ゲート FN-51）
+  Svc->>Svc: ファイル名ゲート
+  Svc->>Repo: resolve(outcome_dir/filename) → is_file?（_archive/ 配下は数えない）
+  Repo->>FS: stat
+  Svc-->>Reader: bool
+  Note over Svc,FS: 全操作を構造化ログ（LoggerFactory・correlation_id）に残す。vault は beads・設定・履歴に触れず、Obsidian vault 以外の永続ファイルを所有しない（_archive/ は outcome/ の内側＝所有領域内）
